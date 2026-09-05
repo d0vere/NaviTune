@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 struct InjectionSongMetadata {
     let navidromeID: String
@@ -11,6 +12,7 @@ struct InjectionSongMetadata {
     let fileSize: Int
     let remoteFilename: String
     let fileExtension: String
+    let durationMs: Int
 
     init(song: Song, localURL: URL) throws {
         let values = try localURL.resourceValues(forKeys: [.fileSizeKey])
@@ -25,6 +27,10 @@ struct InjectionSongMetadata {
         let ext = localURL.pathExtension.isEmpty ? (song.suffix ?? "m4a") : localURL.pathExtension.lowercased()
         self.fileExtension = ext
         self.remoteFilename = Self.remoteFilename(for: song.id, ext: ext)
+
+        let asset = AVURLAsset(url: localURL)
+        let seconds = CMTimeGetSeconds(asset.duration)
+        self.durationMs = seconds.isFinite && seconds > 0 ? Int(seconds * 1000.0) : 0
     }
 
     private static func remoteFilename(for navidromeID: String, ext: String) -> String {
