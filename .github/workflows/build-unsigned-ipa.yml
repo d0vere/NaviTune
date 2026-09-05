@@ -17,7 +17,7 @@ permissions:
 jobs:
   build:
     name: Build unsigned iOS IPA
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
@@ -26,8 +26,9 @@ jobs:
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Install build dependencies
         run: |
@@ -74,14 +75,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           cd "$RUNNER_TEMP/ipa"
-          /usr/bin/zip -qry "$GITHUB_WORKSPACE/NavidromeMusicSync-unsigned.ipa" Payload
-          /usr/bin/unzip -l "$GITHUB_WORKSPACE/NavidromeMusicSync-unsigned.ipa" | head -40
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/NaviTune-unsigned.ipa" Payload
+          /usr/bin/unzip -l "$GITHUB_WORKSPACE/NaviTune-unsigned.ipa" | head -40
 
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NavidromeMusicSync-unsigned
-          path: NavidromeMusicSync-unsigned.ipa
+          name: NaviTune-unsigned
+          path: NaviTune-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
 
@@ -93,10 +94,10 @@ jobs:
           set -euo pipefail
           gh release delete navi-test-latest --cleanup-tag -y || true
           gh release create navi-test-latest \
-            NavidromeMusicSync-unsigned.ipa \
+            NaviTune-unsigned.ipa \
             --target "$GITHUB_SHA" \
-            --title "Latest Navi Music Sync test IPA" \
-            --notes "Automated unsigned test build from commit $GITHUB_SHA. Download the .ipa asset directly for SideStore." \
+            --title "Latest NaviTune test IPA" \
+            --notes "Automated unsigned NaviTune test build from commit $GITHUB_SHA. Download the .ipa asset directly for SideStore." \
             --prerelease
 
       - name: Upload idevice FFI diagnostics
