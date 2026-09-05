@@ -59,18 +59,26 @@ actor NavidromeClient {
         try await downloadFile(song: song, extra: [], extensionOverride: song.suffix ?? "m4a", filenameSuffix: "")
     }
 
-    /// Preserve the source file byte-for-byte for Music injection. The previous
-    /// forced MP3 path could cause an unnecessary lossy transcode (and on some
-    /// Navidrome/transcoding configurations produced audibly degraded output).
-    /// The database builder already understands the native audio extensions we
-    /// use, so prefer the original Navidrome download.
     func downloadForMusicInjection(_ song: Song) async throws -> URL {
-        try await downloadFile(
+        try cleanupOldInjectionStagingFiles()
+        return try await downloadFile(
             song: song,
             extra: [],
             extensionOverride: song.suffix ?? "m4a",
             filenameSuffix: ".music"
         )
+    }
+
+    private func cleanupOldInjectionStagingFiles() throws {
+        let fm = FileManager.default
+        let root = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Downloads", isDirectory: true)
+        guard fm.fileExists(atPath: root.path) else { return }
+
+        let files = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        for file in files where file.lastPathComponent.contains(".music.") {
+            try? fm.removeItem(at: file)
+        }
     }
 
     private func downloadFile(song: Song, extra: [URLQueryItem], extensionOverride: String, filenameSuffix: String) async throws -> URL {
