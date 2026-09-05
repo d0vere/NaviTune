@@ -9,7 +9,10 @@ struct NavidromeMusicSyncApp: App {
         WindowGroup {
             ZStack(alignment: .topTrailing) {
                 ContentView()
-                EmergencyLibraryRestoreButton()
+                VStack(alignment: .trailing, spacing: 8) {
+                    EmergencyLibraryRestoreButton()
+                    FullLibrarySyncButton()
+                }
             }
             .environmentObject(model)
             .environmentObject(pairingStore)
