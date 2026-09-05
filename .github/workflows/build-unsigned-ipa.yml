@@ -14,7 +14,7 @@ jobs:
   build:
     name: Build unsigned iOS IPA
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -25,8 +25,25 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build dependencies
+        run: |
+          brew install xcodegen
+          rustup target add aarch64-apple-ios
+
+      - name: Build idevice FFI for iOS
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/jkcoxson/idevice.git "$RUNNER_TEMP/idevice"
+          cd "$RUNNER_TEMP/idevice/ffi"
+          RUSTFLAGS="-C link-arg=-miphoneos-version-min=16.0" \
+          BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path)" \
+          IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+          cargo build --release --target aarch64-apple-ios --features obfuscate
+          mkdir -p "$GITHUB_WORKSPACE/Vendor/idevice"
+          cp idevice.h "$GITHUB_WORKSPACE/Vendor/idevice/idevice.h"
+          cp "$RUNNER_TEMP/idevice/target/aarch64-apple-ios/release/libidevice_ffi.a" \
+             "$GITHUB_WORKSPACE/Vendor/idevice/libidevice_ffi.a"
+          file "$GITHUB_WORKSPACE/Vendor/idevice/libidevice_ffi.a"
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -63,3 +80,13 @@ jobs:
           path: NavidromeMusicSync-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload idevice FFI diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: idevice-ffi-ios
+          path: |
+            Vendor/idevice/idevice.h
+            Vendor/idevice/libidevice_ffi.a
+          if-no-files-found: error
+          retention-days: 7
