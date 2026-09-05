@@ -8,8 +8,8 @@ struct NaviDuplicateCleanupResult {
 
     var summary: String {
         removedItems == 0
-            ? "No duplicate or legacy Navi Music Sync tracks were found."
-            : "Removed \(removedItems) duplicate/legacy track record(s) and \(removedFiles.count) obsolete audio file(s)."
+            ? "No duplicate, ghost, or obsolete low-quality Navi Music Sync tracks were found."
+            : "Removed \(removedItems) duplicate/legacy/obsolete track record(s) and \(removedFiles.count) obsolete audio file(s)."
     }
 }
 
@@ -28,11 +28,21 @@ enum NaviDuplicateCleanupError: LocalizedError {
 }
 
 /// Consolidates only records that can be identified as Navi Music Sync-owned.
-/// Modern files use a 16-hex SHA-derived stem based on the Navidrome song ID.
-/// For a repeated stem, the best surviving format is kept (lossless first),
-/// with the newest record breaking ties. Old 12-character test filenames are
-/// treated as legacy and removed.
+///
+/// There are three generations we can identify safely:
+/// - legacy 12-character filenames: broken early test imports, always removed;
+/// - 16-hex MP3 imports created before the source-preserving build shipped:
+///   these were produced by the temporary forced-transcode pipeline and are
+///   removed even when they are the only copy, so they can be re-imported from
+///   Navidrome at original quality;
+/// - current 16-hex imports: grouped by Navidrome hash and deduplicated, keeping
+///   the newest/best original-format row.
 final class NaviDuplicateCleanupService {
+    /// Commit 7a364a1 switched injection from forced MP3 transcoding to original
+    /// source bytes. Imports before this moment are test-generation assets.
+    /// 2026-09-05 08:11:49 UTC.
+    private let sourcePreservingCutoff: Int64 = 1_788_595_909
+
     private struct Candidate {
         let pid: Int64
         let filename: String
@@ -40,6 +50,10 @@ final class NaviDuplicateCleanupService {
         let ext: String
         let dateAdded: Int64
         let legacy12: Bool
+
+        var obsoleteForcedMP3: Bool {
+            !legacy12 && ext == "mp3" && dateAdded > 0 && dateAdded < 1_788_595_909
+        }
     }
 
     func clean(databaseURL: URL) throws -> NaviDuplicateCleanupResult {
@@ -53,24 +67,30 @@ final class NaviDuplicateCleanupService {
         let candidates = try ownedCandidates(db)
         var remove = [Candidate]()
 
-        // Legacy 12-char names came only from the broken/test generations.
-        remove.append(contentsOf: candidates.filter(\.legacy12))
+        remove.append(contentsOf: candidates.filter { $0.legacy12 || isObsoleteForcedMP3($0) })
+        var removePIDs = Set(remove.map(\.pid))
 
-        let modern = candidates.filter { !$0.legacy12 }
+        // Deduplicate only among current-generation survivors. Newest record is
+        // the primary signal because the source-preserving import is now our
+        // validated path. Format quality is a tie-breaker, not the other way
+        // around; this avoids preserving an old test row just because its file
+        // extension happens to look "better".
+        let modern = candidates.filter { !$0.legacy12 && !removePIDs.contains($0.pid) }
         let groups = Dictionary(grouping: modern, by: \.stem)
         for (_, group) in groups where group.count > 1 {
             let sorted = group.sorted {
+                if $0.dateAdded != $1.dateAdded { return $0.dateAdded > $1.dateAdded }
                 let lhs = qualityRank($0.ext)
                 let rhs = qualityRank($1.ext)
                 if lhs != rhs { return lhs > rhs }
-                return $0.dateAdded > $1.dateAdded
+                return $0.pid > $1.pid
             }
-            remove.append(contentsOf: sorted.dropFirst())
+            for candidate in sorted.dropFirst() where !removePIDs.contains(candidate.pid) {
+                remove.append(candidate)
+                removePIDs.insert(candidate.pid)
+            }
         }
 
-        // A duplicate row can point to the exact same physical file as the row
-        // we keep. Delete a remote file only when no surviving row references it.
-        let removePIDs = Set(remove.map(\.pid))
         let survivingFilenames = Set(candidates.filter { !removePIDs.contains($0.pid) }.map(\.filename))
         let removableFiles = Array(Set(remove.map(\.filename)).subtracting(survivingFilenames)).sorted()
 
@@ -82,6 +102,8 @@ final class NaviDuplicateCleanupService {
         do {
             let childTables = ["lyrics", "chapter", "item_video", "item_search", "item_store", "item_stats", "item_playback", "item_extra"]
             for candidate in remove {
+                // Artwork is album-level on current iOS and is intentionally not
+                // deleted here; a surviving track from the album may still use it.
                 for table in childTables where try tableExists(db, table) {
                     try exec(db, "DELETE FROM \(table) WHERE item_pid = \(candidate.pid)")
                 }
@@ -114,6 +136,10 @@ final class NaviDuplicateCleanupService {
         return NaviDuplicateCleanupResult(removedItems: remove.count, removedFiles: removableFiles, databaseURL: databaseURL)
     }
 
+    private func isObsoleteForcedMP3(_ candidate: Candidate) -> Bool {
+        !candidate.legacy12 && candidate.ext == "mp3" && candidate.dateAdded > 0 && candidate.dateAdded < sourcePreservingCutoff
+    }
+
     private func ownedCandidates(_ db: OpaquePointer) throws -> [Candidate] {
         let sql = """
         SELECT item.item_pid, item_extra.location, COALESCE(item.date_added, 0)
@@ -136,12 +162,8 @@ final class NaviDuplicateCleanupService {
             let hash16 = stem.count == 16 && stem.allSatisfy { $0.isNumber || ($0 >= "A" && $0 <= "F") }
             guard old12 || hash16 else { continue }
             result.append(Candidate(
-                pid: sqlite3_column_int64(statement, 0),
-                filename: filename,
-                stem: stem,
-                ext: ext,
-                dateAdded: sqlite3_column_int64(statement, 2),
-                legacy12: old12
+                pid: sqlite3_column_int64(statement, 0), filename: filename, stem: stem, ext: ext,
+                dateAdded: sqlite3_column_int64(statement, 2), legacy12: old12
             ))
         }
         return result
