@@ -31,7 +31,7 @@ enum MusicArtworkDatabaseError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .openFailed: return "Could not open the Music database for artwork metadata."
-        case .unsupportedSchema: return "This Music database does not expose the artwork tables required for local album covers."
+        case .unsupportedSchema: return "This Music database does not expose the artwork tables required for local covers."
         case .sqlFailed(let detail): return "Artwork database update failed: \(detail)"
         }
     }
@@ -55,52 +55,81 @@ final class MusicArtworkDatabaseWriter {
 
         try exec(db, "BEGIN IMMEDIATE")
         do {
-            let tokenColumns = try tableColumns(db, "artwork_token")
-            var tokenValues: [String: SQLValue] = [
-                "artwork_token": .text(artwork.token),
-                "artwork_source_type": .int(300),
-                "artwork_type": .int(6),
-                "entity_pid": .int(albumPID),
-                "entity_type": .int(4),
-                "artwork_variant_type": .int(0)
-            ]
-            for name in ["primary_text_color", "secondary_text_color", "tertiary_text_color", "quaternary_text_color", "background_color", "gradient_text_color", "gradient_color"] where tokenColumns.contains(name) {
-                tokenValues[name] = .text("")
-            }
-            if tokenColumns.contains("gradient_size_start") { tokenValues["gradient_size_start"] = .double(-1) }
-            if tokenColumns.contains("gradient_size_end") { tokenValues["gradient_size_end"] = .double(-1) }
-            try insertDynamic(db, table: "artwork_token", replace: true, values: tokenValues)
+            // Album-level artwork used by album/grid/detail views.
+            try writeArtworkLink(
+                db,
+                entityPID: albumPID,
+                entityType: 4,
+                artworkType: 6,
+                token: artwork.token,
+                relativePath: artwork.relativePath
+            )
 
-            let artworkColumns = try tableColumns(db, "artwork")
-            var artworkValues: [String: SQLValue] = [
-                "artwork_token": .text(artwork.token),
-                "artwork_source_type": .int(300),
-                "relative_path": .text(artwork.relativePath),
-                "artwork_type": .int(6),
-                "artwork_variant_type": .int(0)
-            ]
-            if artworkColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
-            try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
-
-            // This table is what Music consults to choose the artwork token for
-            // an album. Without it, artwork/artwork_token can exist correctly
-            // while the UI still renders no cover. ByeTunes writes the same
-            // album linkage for iOS 26.4+ local artwork.
-            try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
-                "entity_pid": .int(albumPID),
-                "entity_type": .int(4),
-                "artwork_type": .int(6),
-                "available_artwork_token": .text(artwork.token),
-                "fetchable_artwork_token": .text(""),
-                "fetchable_artwork_source_type": .int(0),
-                "artwork_variant_type": .int(0)
-            ])
+            // Track-level artwork used by song rows and Now Playing. Music looks
+            // specifically for entity_type=1/artwork_type=5 for an individual
+            // item. This token deliberately points to the same physical JPEG as
+            // the album token, so enabling song artwork costs no extra storage.
+            let itemToken = "\(artwork.token)-item"
+            try writeArtworkLink(
+                db,
+                entityPID: itemPID,
+                entityType: 1,
+                artworkType: 5,
+                token: itemToken,
+                relativePath: artwork.relativePath
+            )
 
             try exec(db, "COMMIT")
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error
         }
+    }
+
+    private func writeArtworkLink(
+        _ db: OpaquePointer,
+        entityPID: Int64,
+        entityType: Int64,
+        artworkType: Int64,
+        token: String,
+        relativePath: String
+    ) throws {
+        let tokenColumns = try tableColumns(db, "artwork_token")
+        var tokenValues: [String: SQLValue] = [
+            "artwork_token": .text(token),
+            "artwork_source_type": .int(300),
+            "artwork_type": .int(artworkType),
+            "entity_pid": .int(entityPID),
+            "entity_type": .int(entityType),
+            "artwork_variant_type": .int(0)
+        ]
+        for name in ["primary_text_color", "secondary_text_color", "tertiary_text_color", "quaternary_text_color", "background_color", "gradient_text_color", "gradient_color"] where tokenColumns.contains(name) {
+            tokenValues[name] = .text("")
+        }
+        if tokenColumns.contains("gradient_size_start") { tokenValues["gradient_size_start"] = .double(-1) }
+        if tokenColumns.contains("gradient_size_end") { tokenValues["gradient_size_end"] = .double(-1) }
+        try insertDynamic(db, table: "artwork_token", replace: true, values: tokenValues)
+
+        let artworkColumns = try tableColumns(db, "artwork")
+        var artworkValues: [String: SQLValue] = [
+            "artwork_token": .text(token),
+            "artwork_source_type": .int(300),
+            "relative_path": .text(relativePath),
+            "artwork_type": .int(artworkType),
+            "artwork_variant_type": .int(0)
+        ]
+        if artworkColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
+        try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
+
+        try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
+            "entity_pid": .int(entityPID),
+            "entity_type": .int(entityType),
+            "artwork_type": .int(artworkType),
+            "available_artwork_token": .text(token),
+            "fetchable_artwork_token": .text(""),
+            "fetchable_artwork_source_type": .int(0),
+            "artwork_variant_type": .int(0)
+        ])
     }
 
     private enum SQLValue { case int(Int64), double(Double), text(String) }
