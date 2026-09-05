@@ -8,6 +8,7 @@ struct InjectionSongMetadata {
     let title: String
     let artist: String
     let album: String
+    let genre: String
     let year: Int
     let trackNumber: Int?
     let fileSize: Int
@@ -22,6 +23,8 @@ struct InjectionSongMetadata {
         self.title = song.title
         self.artist = song.artist ?? "Unknown artist"
         self.album = song.album ?? "Unknown album"
+        let trimmedGenre = song.genre?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.genre = trimmedGenre.isEmpty ? "Unknown Genre" : trimmedGenre
         self.year = song.year ?? 0
         self.trackNumber = song.track
         self.fileSize = values.fileSize ?? 0
