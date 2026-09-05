@@ -7,9 +7,12 @@ struct NavidromeMusicSyncApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(model)
-                .environmentObject(pairingStore)
+            ZStack(alignment: .topTrailing) {
+                ContentView()
+                EmergencyLibraryRestoreButton()
+            }
+            .environmentObject(model)
+            .environmentObject(pairingStore)
         }
     }
 }
