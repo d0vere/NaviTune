@@ -31,6 +31,7 @@ struct InjectionSongMetadata {
         let ext = localURL.pathExtension.isEmpty ? (song.suffix ?? "m4a") : localURL.pathExtension.lowercased()
         self.fileExtension = ext
         self.remoteFilename = Self.remoteFilename(for: song.id, ext: ext)
+        InjectionMetadataRegistry.setGenre(self.genre, for: self.remoteFilename)
 
         let asset = AVURLAsset(url: localURL)
         let seconds = CMTimeGetSeconds(asset.duration)
