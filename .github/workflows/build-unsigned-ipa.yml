@@ -50,6 +50,13 @@ jobs:
              "$GITHUB_WORKSPACE/Vendor/idevice/libidevice_ffi.a"
           file "$GITHUB_WORKSPACE/Vendor/idevice/libidevice_ffi.a"
 
+      - name: Generate NaviTune app icon
+        run: |
+          set -euo pipefail
+          swift scripts/generate_app_icon.swift NavidromeMusicSync/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+          test -s NavidromeMusicSync/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+          sips -g pixelWidth -g pixelHeight NavidromeMusicSync/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+
       - name: Generate Xcode project
         run: |
           xcodegen generate
@@ -75,6 +82,7 @@ jobs:
           set -euo pipefail
           APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/NaviTune.app"
           test -d "$APP"
+          test -f "$APP/Assets.car"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           cd "$RUNNER_TEMP/ipa"
