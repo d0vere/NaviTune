@@ -6,10 +6,14 @@ struct FullLibrarySyncResult: Sendable {
     let alreadyPresent: Int
     let imported: Int
     let batches: Int
+    let remaining: Int
 
     var summary: String {
         if imported == 0 {
             return "Navidrome and Music are already in sync. \(serverSongs) server tracks checked; nothing downloaded."
+        }
+        if remaining > 0 {
+            return "Imported \(imported) missing track(s) in \(batches) batch(es). \(remaining) track(s) remain and will be picked up automatically on the next sync."
         }
         return "Library sync complete. Imported \(imported) missing track(s) in \(batches) batch(es); \(alreadyPresent) were already present."
     }
@@ -23,9 +27,9 @@ enum FullLibrarySyncError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingSettings:
-            return "Navidrome settings are incomplete. Open Navi Music Sync and connect once before running full sync."
+            return "NaviTune settings are incomplete. Open the app and connect once before running sync."
         case .missingPairingFile(let filename):
-            return "Missing \(filename). Import the pairing file in Navi Music Sync before running sync."
+            return "Missing \(filename). Import the pairing file in NaviTune before running sync."
         case .databaseValidationFailed(let detail):
             return "The prepared Music database failed validation: \(detail)"
         }
@@ -54,7 +58,10 @@ final class FullLibrarySyncService {
 
     private let batchSize = 25
 
-    func syncUsingSavedConfiguration(progress: ProgressHandler? = nil) async throws -> FullLibrarySyncResult {
+    func syncUsingSavedConfiguration(
+        maxImports: Int? = nil,
+        progress: ProgressHandler? = nil
+    ) async throws -> FullLibrarySyncResult {
         let settings = NavidromeSettingsStore.load()
         guard !settings.server.isEmpty, !settings.username.isEmpty, !settings.password.isEmpty else {
             throw FullLibrarySyncError.missingSettings
@@ -65,6 +72,7 @@ final class FullLibrarySyncService {
             client: client,
             pairingFileURL: pairing.fileURL,
             requiresRemotePairing: pairing.requiresRemotePairing,
+            maxImports: maxImports,
             progress: progress
         )
     }
@@ -73,8 +81,10 @@ final class FullLibrarySyncService {
         client: NavidromeClient,
         pairingFileURL: URL,
         requiresRemotePairing: Bool,
+        maxImports: Int? = nil,
         progress: ProgressHandler? = nil
     ) async throws -> FullLibrarySyncResult {
+        try Task.checkCancellation()
         await report(progress, "Reading Music library", 0.02)
         let snapshot = try DeviceBridge().stageSystemMusicDatabase(
             pairingFileURL: pairingFileURL,
@@ -86,15 +96,23 @@ final class FullLibrarySyncService {
         let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
         let existing = try NaviLibraryIndex.existingLocations(databaseURL: stage.databaseURL)
 
+        try Task.checkCancellation()
         await report(progress, "Scanning complete Navidrome catalog", 0.08)
         let rawSongs = try await client.allSongs()
         var seenIDs = Set<String>()
         let serverSongs = rawSongs.filter { seenIDs.insert($0.id).inserted }
 
-        let missing = serverSongs.filter { song in
+        let allMissing = serverSongs.filter { song in
             !existing.contains(NaviLibraryIndex.expectedRemoteFilename(for: song))
         }
-        let alreadyPresent = serverSongs.count - missing.count
+        let alreadyPresent = serverSongs.count - allMissing.count
+        let missing: [Song]
+        if let maxImports, maxImports > 0 {
+            missing = Array(allMissing.prefix(maxImports))
+        } else {
+            missing = allMissing
+        }
+        let remainingAfterThisRun = max(allMissing.count - missing.count, 0)
 
         if missing.isEmpty {
             await report(progress, "Already in sync", 1.0)
@@ -102,7 +120,8 @@ final class FullLibrarySyncService {
                 serverSongs: serverSongs.count,
                 alreadyPresent: alreadyPresent,
                 imported: 0,
-                batches: 0
+                batches: 0,
+                remaining: 0
             )
         }
 
@@ -112,6 +131,7 @@ final class FullLibrarySyncService {
         var unavailableCovers = Set<String>()
 
         for batchIndex in 0..<totalBatches {
+            try Task.checkCancellation()
             let lower = batchIndex * batchSize
             let upper = min(lower + batchSize, missing.count)
             let batch = Array(missing[lower..<upper])
@@ -119,11 +139,13 @@ final class FullLibrarySyncService {
             payloads.reserveCapacity(batch.count)
 
             for (offset, song) in batch.enumerated() {
+                try Task.checkCancellation()
                 let globalIndex = lower + offset
                 let baseProgress = 0.10 + (Double(globalIndex) / Double(max(missing.count, 1))) * 0.72
                 await report(progress, "Downloading \(globalIndex + 1)/\(missing.count): \(song.title)", baseProgress)
 
                 let localURL = try await client.downloadForMusicInjection(song)
+                try Task.checkCancellation()
                 let metadata = try InjectionSongMetadata(song: song, localURL: localURL)
                 let mutation = try LocalMusicDatabaseBuilder().addSingleTrack(metadata, to: stage.databaseURL)
                 try MusicRecordPostProcessor().finalize(
@@ -162,10 +184,12 @@ final class FullLibrarySyncService {
                 payloads.append(FullLibraryTrackPayload(metadata: metadata, artwork: artwork))
             }
 
+            try Task.checkCancellation()
             await report(progress, "Finalizing batch \(batchIndex + 1)/\(totalBatches)", 0.83 + Double(batchIndex) / Double(max(totalBatches, 1)) * 0.08)
             try MusicSortRepair().repair(databaseURL: stage.databaseURL)
             try validate(databaseURL: stage.databaseURL)
 
+            try Task.checkCancellation()
             await report(progress, "Writing batch \(batchIndex + 1)/\(totalBatches) to Music", 0.91 + Double(batchIndex) / Double(max(totalBatches, 1)) * 0.08)
             try FullLibraryDeviceWriter().commit(
                 tracks: payloads,
@@ -181,12 +205,13 @@ final class FullLibrarySyncService {
         }
 
         await client.cleanupOldInjectionStaging()
-        await report(progress, "Library sync complete", 1.0)
+        await report(progress, remainingAfterThisRun > 0 ? "Batch sync complete" : "Library sync complete", 1.0)
         return FullLibrarySyncResult(
             serverSongs: serverSongs.count,
             alreadyPresent: alreadyPresent,
             imported: imported,
-            batches: totalBatches
+            batches: totalBatches,
+            remaining: remainingAfterThisRun
         )
     }
 
