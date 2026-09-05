@@ -16,6 +16,10 @@ enum NavidromeArtistArtworkFetcher {
         let token = md5(settings.password + salt)
         let rest = baseURL.appendingPathComponent("rest").appendingPathComponent("getCoverArt")
         guard var components = URLComponents(url: rest, resolvingAgainstBaseURL: false) else { return nil }
+
+        // Navidrome artwork IDs are typed. Artist images are addressed as
+        // ar-<artistId>, not by the raw Subsonic artistId value.
+        let artworkID = artistID.hasPrefix("ar-") ? artistID : "ar-\(artistID)"
         components.queryItems = [
             URLQueryItem(name: "u", value: settings.username),
             URLQueryItem(name: "t", value: token),
@@ -23,7 +27,7 @@ enum NavidromeArtistArtworkFetcher {
             URLQueryItem(name: "v", value: "1.16.1"),
             URLQueryItem(name: "c", value: "NavidromeMusicSync"),
             URLQueryItem(name: "f", value: "json"),
-            URLQueryItem(name: "id", value: artistID),
+            URLQueryItem(name: "id", value: artworkID),
             URLQueryItem(name: "size", value: String(size))
         ]
         guard let url = components.url else { return nil }
