@@ -188,6 +188,52 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func cleanLegacyGhostTracks(pairingFileURL: URL, requiresRemotePairing: Bool) async {
+        beginActivity("Cleaning legacy ghost tracks")
+        do {
+            progress("Reading live Music database over RP/AFC", 0.15)
+            let snapshot = try DeviceBridge().stageSystemMusicDatabase(
+                pairingFileURL: pairingFileURL,
+                requiresRemotePairing: requiresRemotePairing
+            )
+            defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
+
+            progress("Saving local rollback backup", 0.28)
+            let backupURL = try persistLocalDatabaseBackup(from: snapshot.databaseURL)
+            log("Backup: \(backupURL.lastPathComponent)")
+
+            progress("Preparing safe working copy", 0.42)
+            let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
+
+            progress("Finding records created by old test builds", 0.58)
+            let cleanup = try LegacyGhostCleanupService().clean(databaseURL: stage.databaseURL)
+            log("Legacy candidates: \(cleanup.removedItems)")
+
+            guard cleanup.removedItems > 0 else {
+                progress("No ghost tracks found", 1.0)
+                message = cleanup.summary
+                finishActivity()
+                return
+            }
+
+            progress("Writing cleaned database with rollback protection", 0.78)
+            let deviceResult = try LegacyGhostDeviceWriter().commit(
+                modifiedDatabaseURL: cleanup.databaseURL,
+                legacyFilenames: cleanup.removedFiles,
+                pairingFileURL: pairingFileURL,
+                requiresRemotePairing: requiresRemotePairing
+            )
+            log("Removed remote legacy files: \(deviceResult.removedRemoteFiles)")
+
+            progress("Ghost cleanup complete", 1.0)
+            message = "\(cleanup.summary) Local backup: \(backupURL.lastPathComponent). Remote rollback DB: \(deviceResult.databaseBackupPath). Close and reopen Music."
+            finishActivity()
+        } catch {
+            failActivity(error)
+            message = error.localizedDescription
+        }
+    }
+
     func clearActivityLog() {
         activityLog.removeAll()
         if !loading { activityTitle = "Idle" }
