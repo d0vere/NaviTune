@@ -18,11 +18,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.d0vere.NavidromeMusicSync
         PRODUCT_NAME: NavidromeMusicSync
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Navi Music Sync
+        INFOPLIST_KEY_CFBundleDisplayName: NaviTune
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers: com.d0vere.NavidromeMusicSync.continued-sync
+        INFOPLIST_KEY_UIBackgroundModes: processing
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         CODE_SIGNING_ALLOWED: NO
