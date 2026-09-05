@@ -6,6 +6,7 @@ struct ContentView: View {
     @EnvironmentObject private var pairingStore: PairingFileStore
     @State private var showingPairingImporter = false
     @State private var pairingError: String?
+    @State private var deviceStatus: String?
 
     var body: some View {
         NavigationStack {
@@ -25,20 +26,22 @@ struct ContentView: View {
                 if model.loading { ProgressView().controlSize(.large) }
             }
             .alert("NavidromeMusicSync", isPresented: Binding(
-                get: { model.message != nil || pairingError != nil },
+                get: { model.message != nil || pairingError != nil || deviceStatus != nil },
                 set: {
                     if !$0 {
                         model.message = nil
                         pairingError = nil
+                        deviceStatus = nil
                     }
                 }
             )) {
                 Button("OK", role: .cancel) {
                     model.message = nil
                     pairingError = nil
+                    deviceStatus = nil
                 }
             } message: {
-                Text(pairingError ?? model.message ?? "")
+                Text(pairingError ?? deviceStatus ?? model.message ?? "")
             }
             .fileImporter(
                 isPresented: $showingPairingImporter,
@@ -66,34 +69,7 @@ struct ContentView: View {
                 SecureField("Password", text: $model.password)
             }
 
-            Section("Device pairing") {
-                HStack {
-                    Label(
-                        pairingStore.status,
-                        systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "iphone.and.arrow.forward"
-                    )
-                    Spacer()
-                    if pairingStore.pairingFileURL != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                }
-
-                Button("Import \(pairingStore.expectedFilename)") {
-                    showingPairingImporter = true
-                }
-
-                if pairingStore.pairingFileURL != nil {
-                    Button("Remove pairing file", role: .destructive) {
-                        do { try pairingStore.removePairingFile() }
-                        catch { pairingError = error.localizedDescription }
-                    }
-                }
-
-                Text("The pairing record is stored only inside this app's Documents container. On iOS 26.4+ the app expects an RP pairing file, matching the transport used by current ByeTunes builds.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            pairingSection
 
             Section {
                 Button("Connect") { Task { await model.connect() } }
@@ -108,16 +84,52 @@ struct ContentView: View {
         }
     }
 
-    private var library: some View {
-        List {
-            Section("Device pairing") {
-                HStack {
-                    Text(pairingStore.status)
-                    Spacer()
-                    Button("Import") { showingPairingImporter = true }
-                        .buttonStyle(.borderless)
+    private var pairingSection: some View {
+        Section("Device pairing") {
+            HStack {
+                Label(
+                    pairingStore.status,
+                    systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "iphone.and.arrow.forward"
+                )
+                Spacer()
+                if pairingStore.pairingFileURL != nil {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
                 }
             }
+
+            Button("Import \(pairingStore.expectedFilename)") {
+                showingPairingImporter = true
+            }
+
+            if let pairingURL = pairingStore.pairingFileURL {
+                Button("Test device connection") {
+                    do {
+                        try DeviceBridge().testConnection(
+                            pairingFileURL: pairingURL,
+                            requiresRemotePairing: pairingStore.requiresRPPairingFile
+                        )
+                        deviceStatus = "Device heartbeat connected successfully. idevice transport is working."
+                    } catch {
+                        pairingError = error.localizedDescription
+                    }
+                }
+
+                Button("Remove pairing file", role: .destructive) {
+                    do { try pairingStore.removePairingFile() }
+                    catch { pairingError = error.localizedDescription }
+                }
+            }
+
+            Text("For the classic pairing transport, enable the local-device VPN/tunnel before testing. iOS 26.4+ requires the newer RP pairing transport, which is being integrated separately.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var library: some View {
+        List {
+            pairingSection
 
             if !model.starred.isEmpty {
                 Section("Starred") {
