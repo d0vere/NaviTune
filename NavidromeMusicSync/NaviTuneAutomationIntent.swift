@@ -1,9 +1,8 @@
 import AppIntents
 
 /// Headless entry point used by Shortcuts and Personal Automations.
-/// It deliberately reuses the exact same incremental engine as the app:
-/// the live Music database is inspected first and only missing Navidrome
-/// track IDs are downloaded and committed.
+/// It reuses the same incremental engine as the app: the live Music database
+/// is inspected first and only missing Navidrome tracks are imported.
 struct NaviTuneBackgroundSyncIntent: AppIntent {
     static var title: LocalizedStringResource = "Sync NaviTune Library"
     static var description = IntentDescription(
@@ -11,15 +10,12 @@ struct NaviTuneBackgroundSyncIntent: AppIntent {
     )
     static var openAppWhenRun: Bool = false
 
-    @MainActor
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        _ = try await FullLibrarySyncService().syncUsingSavedConfiguration { _, _ in
-            // Shortcuts owns the presentation while this runs headlessly.
-            // The service still commits progress batch-by-batch, so an interrupted
-            // automation safely resumes from the Music database next time.
-        }
-
-        return .result(dialog: "NaviTune sync completed. The Music library is up to date with the tracks this run could process.")
+    func perform() async throws -> some IntentResult {
+        // Keep a Personal Automation bounded to one protected batch. If more
+        // tracks are pending, the next execution re-reads the live Music DB and
+        // resumes with only the tracks that are still missing.
+        _ = try await FullLibrarySyncService().syncUsingSavedConfiguration(maxImports: 25)
+        return .result()
     }
 }
 
