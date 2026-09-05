@@ -4,47 +4,333 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var pairingStore: PairingFileStore
-    @State private var showingPairingImporter = false
-    @State private var pairingError: String?
-    @State private var deviceStatus: String?
-    @State private var confirmCleanup = false
-    @State private var confirmArtworkRepair = false
+
+    @State private var showingSettings = false
+    @State private var showingMaintenance = false
+    @State private var confirmSync = false
+    @State private var alertText: String?
 
     var body: some View {
         NavigationStack {
-            Group {
-                if model.connected { library }
-                else { login }
+            ScrollView {
+                VStack(spacing: 18) {
+                    hero
+                    readinessCard
+                    syncCard
+                    if model.loading || !model.activityLog.isEmpty {
+                        ActivityCard()
+                    }
+                    libraryOverview
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 36)
             }
-            .navigationTitle("Navi Music Sync")
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("NaviTune")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if model.connected {
-                    Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                        .disabled(model.loading)
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if model.loading || !model.activityLog.isEmpty {
-                    ActivityPanel().environmentObject(model)
-                }
-            }
-            .alert("NavidromeMusicSync", isPresented: Binding(
-                get: { model.message != nil || pairingError != nil || deviceStatus != nil },
-                set: {
-                    if !$0 {
-                        model.message = nil
-                        pairingError = nil
-                        deviceStatus = nil
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        showingMaintenance = true
+                    } label: {
+                        Image(systemName: "wrench.and.screwdriver")
+                    }
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape.fill")
                     }
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+                    .environmentObject(model)
+                    .environmentObject(pairingStore)
+            }
+            .sheet(isPresented: $showingMaintenance) {
+                MaintenanceView()
+                    .environmentObject(model)
+                    .environmentObject(pairingStore)
+            }
+            .confirmationDialog(
+                "Sync Navidrome with Music?",
+                isPresented: $confirmSync,
+                titleVisibility: .visible
+            ) {
+                if let pairingURL = pairingStore.pairingFileURL {
+                    Button("Sync missing tracks") {
+                        Task {
+                            await model.syncEntireNavidromeLibrary(
+                                pairingFileURL: pairingURL,
+                                requiresRemotePairing: pairingStore.requiresRPPairingFile
+                            )
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Music should be closed and LocalDevVPN/tunnel must remain active. Existing tracks are skipped automatically; only missing Navidrome tracks are imported.")
+            }
+            .alert("NaviTune", isPresented: Binding(
+                get: { model.message != nil || alertText != nil },
+                set: { if !$0 { model.message = nil; alertText = nil } }
             )) {
                 Button("OK", role: .cancel) {
                     model.message = nil
-                    pairingError = nil
-                    deviceStatus = nil
+                    alertText = nil
                 }
             } message: {
-                Text(pairingError ?? deviceStatus ?? model.message ?? "")
+                Text(alertText ?? model.message ?? "")
+            }
+            .task {
+                if !model.connected && !model.server.isEmpty && !model.username.isEmpty && !model.password.isEmpty {
+                    await model.connect()
+                }
+            }
+        }
+    }
+
+    private var hero: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 74, height: 74)
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 31, weight: .semibold))
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Your Navidrome library")
+                    .font(.title2.bold())
+                Text("Synced into Apple Music, locally on this iPhone.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 12)
+    }
+
+    private var readinessCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Ready to sync")
+                    .font(.headline)
+                Spacer()
+                if model.connected && pairingStore.pairingFileURL != nil {
+                    Label("Ready", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                } else {
+                    Label("Setup needed", systemImage: "exclamationmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            HStack(spacing: 10) {
+                StatusPill(
+                    title: "Navidrome",
+                    ready: model.connected,
+                    symbol: "server.rack"
+                )
+                StatusPill(
+                    title: "Pairing",
+                    ready: pairingStore.pairingFileURL != nil,
+                    symbol: "iphone"
+                )
+                StatusPill(
+                    title: "Music",
+                    ready: true,
+                    symbol: "music.note"
+                )
+            }
+        }
+        .cardStyle()
+    }
+
+    private var syncCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.loading ? model.activityTitle : "Incremental sync")
+                        .font(.headline)
+                    Text(model.loading
+                         ? "You can leave NaviTune open or move it to the background."
+                         : "Checks the live Music database and downloads only tracks that are missing.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: model.loading ? "arrow.triangle.2.circlepath" : "arrow.down.circle.fill")
+                    .font(.system(size: 32))
+                    .symbolEffect(.rotate, options: model.loading ? .repeating : .default, value: model.loading)
+            }
+
+            if let progress = model.activityProgress, model.loading {
+                ProgressView(value: progress)
+                HStack {
+                    Text("Sync in progress")
+                    Spacer()
+                    Text("\(Int(progress * 100))%")
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Button {
+                if !model.connected {
+                    showingSettings = true
+                } else if pairingStore.pairingFileURL == nil {
+                    showingSettings = true
+                } else {
+                    confirmSync = true
+                }
+            } label: {
+                HStack {
+                    Image(systemName: model.loading ? "clock.fill" : "arrow.triangle.2.circlepath")
+                    Text(model.loading ? "Sync running" : "Sync now")
+                        .fontWeight(.semibold)
+                    Spacer()
+                    if !model.loading {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.bold())
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(model.loading)
+        }
+        .cardStyle()
+    }
+
+    private var libraryOverview: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Navidrome")
+                    .font(.headline)
+                Spacer()
+                if model.connected {
+                    Button("Refresh") {
+                        Task { await model.refresh() }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .disabled(model.loading)
+                }
+            }
+
+            HStack(spacing: 12) {
+                MetricCard(value: "\(model.albums.count)", label: "Recent albums", symbol: "square.stack.fill")
+                MetricCard(value: "\(model.starred.count)", label: "Starred loaded", symbol: "star.fill")
+            }
+
+            if !model.albums.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Recently added")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(model.albums.prefix(6)) { album in
+                        NavigationLink {
+                            AlbumView(album: album)
+                        } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(.thinMaterial)
+                                        .frame(width: 46, height: 46)
+                                    Image(systemName: "music.note")
+                                        .foregroundStyle(.secondary)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(album.name)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(album.artist ?? "Unknown artist")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .cardStyle()
+    }
+}
+
+private struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var pairingStore: PairingFileStore
+
+    @State private var showingPairingImporter = false
+    @State private var localMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Navidrome") {
+                    TextField("https://music.example.com", text: $model.server)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    TextField("Username", text: $model.username)
+                        .textInputAutocapitalization(.never)
+                    SecureField("Password", text: $model.password)
+                    Button(model.connected ? "Reconnect" : "Connect") {
+                        Task { await model.connect() }
+                    }
+                    .disabled(model.server.isEmpty || model.username.isEmpty || model.password.isEmpty || model.loading)
+                }
+
+                Section("Device pairing") {
+                    Label(
+                        pairingStore.status,
+                        systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "checkmark.circle.fill"
+                    )
+                    Button("Import \(pairingStore.expectedFilename)") {
+                        showingPairingImporter = true
+                    }
+                    if pairingStore.pairingFileURL != nil {
+                        Button("Remove pairing file", role: .destructive) {
+                            do { try pairingStore.removePairingFile() }
+                            catch { localMessage = error.localizedDescription }
+                        }
+                    }
+                }
+
+                Section("Background sync") {
+                    Label("Manual sync can continue after locking the screen on iOS 26+.", systemImage: "moon.stars.fill")
+                    Text("For nightly updates, create a Personal Automation in Shortcuts and run “Sync NaviTune Library”. The action imports one protected batch per background run and resumes automatically next time if more remain.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Text("Keep LocalDevVPN or the equivalent local-device tunnel active whenever NaviTune syncs with Music.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
             }
             .fileImporter(
                 isPresented: $showingPairingImporter,
@@ -55,229 +341,211 @@ struct ContentView: View {
                     guard let url = try result.get().first else { return }
                     try pairingStore.importPairingFile(from: url)
                 } catch {
-                    pairingError = error.localizedDescription
+                    localMessage = error.localizedDescription
                 }
             }
-        }
-    }
-
-    private var login: some View {
-        Form {
-            Section("Navidrome server") {
-                TextField("https://music.example.com", text: $model.server)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                TextField("Username", text: $model.username)
-                    .textInputAutocapitalization(.never)
-                SecureField("Password", text: $model.password)
-            }
-            pairingSection
-            Section {
-                Button("Connect") { Task { await model.connect() } }
-                    .disabled(model.server.isEmpty || model.username.isEmpty || model.password.isEmpty || model.loading)
-            }
-            Section {
-                Text("Use HTTPS when connecting to a server over the internet.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var pairingSection: some View {
-        Section("Device pairing") {
-            HStack {
-                Label(pairingStore.status, systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "iphone.and.arrow.forward")
-                Spacer()
-                if pairingStore.pairingFileURL != nil {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                }
-            }
-
-            Button("Import \(pairingStore.expectedFilename)") { showingPairingImporter = true }
-
-            if let pairingURL = pairingStore.pairingFileURL {
-                Button("Test device connection") {
-                    do {
-                        try DeviceBridge().testConnection(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
-                        deviceStatus = "Device heartbeat connected successfully. idevice transport is working."
-                    } catch { pairingError = error.localizedDescription }
-                }
-                .disabled(model.loading)
-
-                Button("Inspect Music library (read-only)") {
-                    do {
-                        let result = try DeviceBridge().inspectSystemMusicLibrary(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
-                        deviceStatus = result.summary
-                    } catch { pairingError = error.localizedDescription }
-                }
-                .disabled(model.loading)
-
-                Button("Stage & validate Music database") {
-                    do {
-                        let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
-                        let report = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
-                        deviceStatus = report.summary
-                    } catch { pairingError = error.localizedDescription }
-                }
-                .disabled(model.loading)
-
-                Button("Repair existing metadata") { confirmArtworkRepair = true }
-                    .disabled(model.loading)
-                    .confirmationDialog(
-                        "Repair metadata on existing Navi tracks?",
-                        isPresented: $confirmArtworkRepair,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Repair metadata") {
-                            Task {
-                                await model.repairExistingSongArtwork(
-                                    pairingFileURL: pairingURL,
-                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
-                                )
-                            }
-                        }
-                        Button("Cancel", role: .cancel) { }
-                    } message: {
-                        Text("Close Music first. This repairs old item-level artwork mappings and looks up each Navi track's real genre in Navidrome. Audio is not re-downloaded or duplicated. A rollback database is created first.")
-                    }
-
-                Button("Clean duplicates & ghost tracks", role: .destructive) { confirmCleanup = true }
-                    .disabled(model.loading)
-                    .confirmationDialog(
-                        "Consolidate Navi Music Sync duplicates?",
-                        isPresented: $confirmCleanup,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Clean duplicates", role: .destructive) {
-                            Task {
-                                await model.cleanDuplicateAndGhostTracks(
-                                    pairingFileURL: pairingURL,
-                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
-                                )
-                            }
-                        }
-                        Button("Cancel", role: .cancel) { }
-                    } message: {
-                        Text("Close Music first. Navi-owned duplicates are grouped by the Navidrome song hash. Original/lossless files are preferred over old MP3 test copies. A rollback database is created before replacement.")
-                    }
-
-                Button("Remove pairing file", role: .destructive) {
-                    do { try pairingStore.removePairingFile() }
-                    catch { pairingError = error.localizedDescription }
-                }
-                .disabled(model.loading)
-            }
-
-            Text("Live injection, metadata repair and cleanup create a local database backup and keep a rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var library: some View {
-        List {
-            pairingSection
-            if !model.starred.isEmpty {
-                Section("Starred") {
-                    ForEach(model.starred.prefix(20)) { song in SongRow(song: song) }
-                }
-            }
-            Section("Newest albums") {
-                ForEach(model.albums) { album in
-                    NavigationLink {
-                        AlbumView(album: album)
-                    } label: {
-                        VStack(alignment: .leading) {
-                            Text(album.name)
-                            Text(album.artist ?? "Unknown artist")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            .alert("NaviTune", isPresented: Binding(
+                get: { localMessage != nil },
+                set: { if !$0 { localMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { localMessage = nil }
+            } message: {
+                Text(localMessage ?? "")
             }
         }
     }
 }
 
-private struct ActivityPanel: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if model.loading { ProgressView().controlSize(.small) }
-                else { Image(systemName: "terminal") }
-                Text(model.activityTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Spacer()
-                if !model.loading { Button("Clear") { model.clearActivityLog() }.font(.caption) }
-            }
-            if let progress = model.activityProgress {
-                ProgressView(value: progress)
-                Text("\(Int(progress * 100))%").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-            } else if model.loading { ProgressView() }
-
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
-                        ForEach(Array(model.activityLog.enumerated()), id: \.offset) { index, line in
-                            Text(line).font(.caption2.monospaced()).frame(maxWidth: .infinity, alignment: .leading).id(index)
-                        }
-                    }
-                }
-                .frame(maxHeight: 110)
-                .onChange(of: model.activityLog.count) { count in
-                    if count > 0 { withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) } }
-                }
-            }
-        }
-        .padding(12)
-        .background(.regularMaterial)
-        .overlay(alignment: .top) { Divider() }
-    }
-}
-
-private struct SongRow: View {
+private struct MaintenanceView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var pairingStore: PairingFileStore
-    @State private var confirmLiveInjection = false
-    let song: Song
+
+    @State private var localMessage: String?
+    @State private var confirmCleanup = false
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading) {
-                Text(song.title)
-                Text(song.artist ?? "Unknown artist").font(.caption).foregroundStyle(.secondary)
+        NavigationStack {
+            List {
+                Section("Device diagnostics") {
+                    if let pairingURL = pairingStore.pairingFileURL {
+                        Button("Test device connection") {
+                            do {
+                                try DeviceBridge().testConnection(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
+                                localMessage = "Device heartbeat connected successfully."
+                            } catch { localMessage = error.localizedDescription }
+                        }
+
+                        Button("Inspect Music library") {
+                            do {
+                                let result = try DeviceBridge().inspectSystemMusicLibrary(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
+                                localMessage = result.summary
+                            } catch { localMessage = error.localizedDescription }
+                        }
+
+                        Button("Validate Music database") {
+                            do {
+                                let snapshot = try DeviceBridge().stageSystemMusicDatabase(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
+                                defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
+                                let report = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
+                                localMessage = report.summary
+                            } catch { localMessage = error.localizedDescription }
+                        }
+                    } else {
+                        Text("Import the pairing file in Settings first.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Library maintenance") {
+                    if let pairingURL = pairingStore.pairingFileURL {
+                        Button("Clean duplicates & ghost tracks") {
+                            confirmCleanup = true
+                        }
+                        .disabled(model.loading)
+                        .confirmationDialog(
+                            "Clean NaviTune duplicates?",
+                            isPresented: $confirmCleanup,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Clean duplicates", role: .destructive) {
+                                Task {
+                                    await model.cleanDuplicateAndGhostTracks(
+                                        pairingFileURL: pairingURL,
+                                        requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                    )
+                                }
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("A rollback database is created before replacement. Music should be closed during this operation.")
+                        }
+                    }
+                }
+
+                Section("Recovery") {
+                    EmergencyLibraryRestoreButton()
+                    MusicLibraryWipeButton()
+                }
+
+                Section {
+                    Text("Artist artwork is intentionally not modified by NaviTune. Music handles artist imagery independently.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Maintenance")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("NaviTune", isPresented: Binding(
+                get: { localMessage != nil },
+                set: { if !$0 { localMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { localMessage = nil }
+            } message: {
+                Text(localMessage ?? "")
+            }
+        }
+    }
+}
+
+private struct ActivityCard: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                if model.loading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                Text("Activity")
+                    .font(.headline)
+                Spacer()
+                if !model.loading {
+                    Button("Clear") { model.clearActivityLog() }
+                        .font(.caption.weight(.semibold))
+                }
+            }
+
+            if let progress = model.activityProgress {
+                ProgressView(value: progress)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(model.activityLog.suffix(12).enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .frame(maxHeight: 130)
+        }
+        .cardStyle()
+    }
+}
+
+private struct StatusPill: View {
+    let title: String
+    let ready: Bool
+    let symbol: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: ready ? "checkmark.circle.fill" : symbol)
+                .font(.title3)
+                .foregroundStyle(ready ? .green : .secondary)
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct MetricCard: View {
+    let value: String
+    let label: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value)
+                    .font(.title3.bold())
+                    .monospacedDigit()
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
-
-            if let pairingURL = pairingStore.pairingFileURL {
-                Button {
-                    Task { await model.simulateLocalInjection(song, pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile) }
-                } label: { Image(systemName: "testtube.2") }
-                .buttonStyle(.borderless)
-                .disabled(model.loading)
-                .help("Simulate Music database injection locally")
-
-                Button { confirmLiveInjection = true } label: { Image(systemName: "arrow.up.doc.fill") }
-                    .buttonStyle(.borderless)
-                    .disabled(model.loading)
-                    .help("Inject original-quality audio and artwork into Music")
-                    .confirmationDialog("Inject this track into Music?", isPresented: $confirmLiveInjection, titleVisibility: .visible) {
-                        Button("Inject into Music", role: .destructive) {
-                            Task { await model.commitInjection(song, pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile) }
-                        }
-                        Button("Cancel", role: .cancel) { }
-                    } message: {
-                        Text("Close Music first. Original Navidrome audio, album/song artwork, genre and artist artwork are imported when available. Database backups are created before write-back.")
-                    }
-            }
-
-            Button { Task { await model.downloadAndImport(song) } } label: { Image(systemName: "square.and.arrow.down") }
-                .buttonStyle(.borderless)
-                .disabled(model.loading)
         }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -287,8 +555,36 @@ private struct AlbumView: View {
     @State private var songs: [Song] = []
 
     var body: some View {
-        List(songs) { song in SongRow(song: song) }
-            .navigationTitle(album.name)
-            .task { songs = await model.albumSongs(album) }
+        List(songs) { song in
+            VStack(alignment: .leading, spacing: 3) {
+                Text(song.title)
+                    .font(.body.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(song.artist ?? "Unknown artist")
+                    if let genre = song.genre, !genre.isEmpty {
+                        Text("•")
+                        Text(genre)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 3)
+        }
+        .navigationTitle(album.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { songs = await model.albumSongs(album) }
+    }
+}
+
+private extension View {
+    func cardStyle() -> some View {
+        self
+            .padding(16)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.05))
+            }
     }
 }
