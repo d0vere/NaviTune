@@ -88,42 +88,39 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func simulateLocalInjection(
-        _ song: Song,
-        pairingFileURL: URL,
-        requiresRemotePairing: Bool
-    ) async {
+    func simulateLocalInjection(_ song: Song, pairingFileURL: URL, requiresRemotePairing: Bool) async {
         guard let client else { return }
         beginActivity("Simulating injection: \(song.title)")
-
         do {
-            progress("Transcoding/downloading MP3 from Navidrome", 0.12)
+            progress("Downloading original audio from Navidrome", 0.10)
             let localFile = try await client.downloadForMusicInjection(song)
-            log("MP3 ready: \(localFile.lastPathComponent)")
-
-            progress("Reading Music database over RP/AFC", 0.30)
+            log("Original audio ready: \(localFile.lastPathComponent)")
             let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
-            let snapshot = try DeviceBridge().stageSystemMusicDatabase(
-                pairingFileURL: pairingFileURL,
-                requiresRemotePairing: requiresRemotePairing
-            )
+
+            var artwork: InjectionArtwork?
+            if let coverID = song.coverArt {
+                progress("Fetching album artwork", 0.20)
+                if let raw = try? await client.coverArt(id: coverID) {
+                    artwork = InjectionArtwork.make(from: raw, navidromeCoverID: coverID)
+                    if artwork != nil { log("Artwork prepared") }
+                }
+            }
+
+            progress("Reading Music database over RP/AFC", 0.32)
+            let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
             defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
-            log("Music database snapshot: \(snapshot.byteCount) bytes")
 
             progress("Preparing safe working copy", 0.50)
             let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
-
             progress("Creating local Music record", 0.68)
             let result = try LocalMusicDatabaseBuilder().addSingleTrack(metadata, to: stage.databaseURL)
-
-            progress("Normalizing local-only flags and duplicates", 0.86)
-            try MusicRecordPostProcessor().finalize(
-                databaseURL: result.databaseURL,
-                currentItemPID: result.itemPID,
-                remoteFilename: result.remoteFilename
-            )
+            try MusicRecordPostProcessor().finalize(databaseURL: result.databaseURL, currentItemPID: result.itemPID, remoteFilename: result.remoteFilename)
+            if let artwork {
+                progress("Attaching album artwork metadata", 0.86)
+                try MusicArtworkDatabaseWriter().attachAlbumArtwork(databaseURL: result.databaseURL, itemPID: result.itemPID, artwork: artwork)
+            }
             progress("Simulation complete", 1.0)
-            message = "\(result.summary) Injection test used a normalized MP3 asset."
+            message = "\(result.summary) Original audio preserved; artwork metadata prepared when available."
             finishActivity()
         } catch {
             failActivity(error)
@@ -131,56 +128,64 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func commitInjection(
-        _ song: Song,
-        pairingFileURL: URL,
-        requiresRemotePairing: Bool
-    ) async {
+    func commitInjection(_ song: Song, pairingFileURL: URL, requiresRemotePairing: Bool) async {
         guard let client else { return }
         beginActivity("Injecting into Music: \(song.title)")
+        var localFile: URL?
 
         do {
-            progress("Transcoding/downloading MP3 from Navidrome", 0.08)
-            let localFile = try await client.downloadForMusicInjection(song)
-            let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
-            log("Audio ready: \(metadata.remoteFilename), \(metadata.fileSize) bytes")
+            await client.cleanupOldInjectionStaging()
+            progress("Downloading original audio from Navidrome", 0.07)
+            let downloaded = try await client.downloadForMusicInjection(song)
+            localFile = downloaded
+            let metadata = try InjectionSongMetadata(song: song, localURL: downloaded)
+            log("Original audio: \(metadata.remoteFilename), \(metadata.fileSize) bytes")
 
-            progress("Reading live Music database over RP/AFC", 0.22)
-            let snapshot = try DeviceBridge().stageSystemMusicDatabase(
-                pairingFileURL: pairingFileURL,
-                requiresRemotePairing: requiresRemotePairing
-            )
+            var artwork: InjectionArtwork?
+            if let coverID = song.coverArt {
+                progress("Fetching album artwork", 0.15)
+                if let raw = try? await client.coverArt(id: coverID), let prepared = InjectionArtwork.make(from: raw, navidromeCoverID: coverID) {
+                    artwork = prepared
+                    log("Artwork ready: \(prepared.relativePath)")
+                } else {
+                    log("Artwork unavailable; continuing without cover")
+                }
+            }
+
+            progress("Reading live Music database over RP/AFC", 0.24)
+            let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
             defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
-            log("Downloaded MediaLibrary.sqlitedb")
 
-            progress("Saving local rollback backup", 0.35)
+            progress("Saving local rollback backup", 0.34)
             let backupURL = try persistLocalDatabaseBackup(from: snapshot.databaseURL)
             log("Backup: \(backupURL.lastPathComponent)")
 
-            progress("Preparing and validating working database", 0.48)
+            progress("Preparing and validating working database", 0.44)
             let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
-
-            progress("Writing song metadata into database", 0.62)
+            progress("Writing song metadata into database", 0.56)
             let mutation = try LocalMusicDatabaseBuilder().addSingleTrack(metadata, to: stage.databaseURL)
+            progress("Normalizing local flags and exact duplicates", 0.66)
+            try MusicRecordPostProcessor().finalize(databaseURL: mutation.databaseURL, currentItemPID: mutation.itemPID, remoteFilename: mutation.remoteFilename)
 
-            progress("Removing duplicates and normalizing local flags", 0.73)
-            try MusicRecordPostProcessor().finalize(
-                databaseURL: mutation.databaseURL,
-                currentItemPID: mutation.itemPID,
-                remoteFilename: mutation.remoteFilename
-            )
+            if let artwork {
+                progress("Attaching album artwork metadata", 0.72)
+                try MusicArtworkDatabaseWriter().attachAlbumArtwork(databaseURL: mutation.databaseURL, itemPID: mutation.itemPID, artwork: artwork)
+                progress("Uploading album artwork", 0.78)
+                try ArtworkDeviceUploader().upload(artwork, pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
+            }
 
-            progress("Uploading audio and database over RP/AFC", 0.84)
-            let result = try DeviceWriteBackService().commit(
-                metadata: metadata,
-                modifiedDatabaseURL: mutation.databaseURL,
-                pairingFileURL: pairingFileURL,
-                requiresRemotePairing: requiresRemotePairing
-            )
+            progress("Uploading audio and database over RP/AFC", 0.86)
+            let result = try DeviceWriteBackService().commit(metadata: metadata, modifiedDatabaseURL: mutation.databaseURL, pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
             log("Remote write-back completed")
 
+            if let localFile {
+                try? FileManager.default.removeItem(at: localFile)
+                await client.cleanupOldInjectionStaging()
+                log("Temporary staging audio removed")
+            }
+
             progress("Injection complete", 1.0)
-            message = "\(result.summary) Local backup: \(backupURL.lastPathComponent). Injected audio was normalized to MP3 for native Music compatibility. Close and reopen Music before checking it."
+            message = "\(result.summary) Original audio quality preserved. Album artwork was added when Navidrome provided it. Local backup: \(backupURL.lastPathComponent). Close and reopen Music before checking it."
             finishActivity()
         } catch {
             failActivity(error)
@@ -188,14 +193,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func cleanLegacyGhostTracks(pairingFileURL: URL, requiresRemotePairing: Bool) async {
-        beginActivity("Cleaning legacy ghost tracks")
+    func cleanDuplicateAndGhostTracks(pairingFileURL: URL, requiresRemotePairing: Bool) async {
+        beginActivity("Cleaning duplicates and ghost tracks")
         do {
-            progress("Reading live Music database over RP/AFC", 0.15)
-            let snapshot = try DeviceBridge().stageSystemMusicDatabase(
-                pairingFileURL: pairingFileURL,
-                requiresRemotePairing: requiresRemotePairing
-            )
+            progress("Reading live Music database over RP/AFC", 0.14)
+            let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
             defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
 
             progress("Saving local rollback backup", 0.28)
@@ -204,29 +206,22 @@ final class AppModel: ObservableObject {
 
             progress("Preparing safe working copy", 0.42)
             let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
-
-            progress("Finding records created by old test builds", 0.58)
-            let cleanup = try LegacyGhostCleanupService().clean(databaseURL: stage.databaseURL)
-            log("Legacy candidates: \(cleanup.removedItems)")
+            progress("Grouping Navi imports by Navidrome hash", 0.58)
+            let cleanup = try NaviDuplicateCleanupService().clean(databaseURL: stage.databaseURL)
+            log("Records to remove: \(cleanup.removedItems)")
 
             guard cleanup.removedItems > 0 else {
-                progress("No ghost tracks found", 1.0)
+                progress("No duplicates found", 1.0)
                 message = cleanup.summary
                 finishActivity()
                 return
             }
 
             progress("Writing cleaned database with rollback protection", 0.78)
-            let deviceResult = try LegacyGhostDeviceWriter().commit(
-                modifiedDatabaseURL: cleanup.databaseURL,
-                legacyFilenames: cleanup.removedFiles,
-                pairingFileURL: pairingFileURL,
-                requiresRemotePairing: requiresRemotePairing
-            )
-            log("Removed remote legacy files: \(deviceResult.removedRemoteFiles)")
-
-            progress("Ghost cleanup complete", 1.0)
-            message = "\(cleanup.summary) Local backup: \(backupURL.lastPathComponent). Remote rollback DB: \(deviceResult.databaseBackupPath). Close and reopen Music."
+            let deviceResult = try LegacyGhostDeviceWriter().commit(modifiedDatabaseURL: cleanup.databaseURL, legacyFilenames: cleanup.removedFiles, pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
+            log("Removed obsolete remote audio files: \(deviceResult.removedRemoteFiles)")
+            progress("Cleanup complete", 1.0)
+            message = "\(cleanup.summary) Lossless/original copies were preferred over old MP3 transcodes. Local backup: \(backupURL.lastPathComponent). Close and reopen Music."
             finishActivity()
         } catch {
             failActivity(error)
@@ -275,15 +270,11 @@ final class AppModel: ObservableObject {
 
     private func persistLocalDatabaseBackup(from sourceURL: URL) throws -> URL {
         let fm = FileManager.default
-        let directory = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MusicLibraryBackups", isDirectory: true)
+        let directory = fm.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("MusicLibraryBackups", isDirectory: true)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let destination = directory.appendingPathComponent(
-            "MediaLibrary-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).sqlitedb"
-        )
+        let destination = directory.appendingPathComponent("MediaLibrary-\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).sqlitedb")
         try fm.copyItem(at: sourceURL, to: destination)
         return destination
     }
