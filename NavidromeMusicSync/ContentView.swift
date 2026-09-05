@@ -20,10 +20,14 @@ struct ContentView: View {
                     Button {
                         Task { await model.refresh() }
                     } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(model.loading)
                 }
             }
-            .overlay {
-                if model.loading { ProgressView().controlSize(.large) }
+            .safeAreaInset(edge: .bottom) {
+                if model.loading || !model.activityLog.isEmpty {
+                    ActivityPanel()
+                        .environmentObject(model)
+                }
             }
             .alert("NavidromeMusicSync", isPresented: Binding(
                 get: { model.message != nil || pairingError != nil || deviceStatus != nil },
@@ -114,6 +118,7 @@ struct ContentView: View {
                         pairingError = error.localizedDescription
                     }
                 }
+                .disabled(model.loading)
 
                 Button("Inspect Music library (read-only)") {
                     do {
@@ -126,6 +131,7 @@ struct ContentView: View {
                         pairingError = error.localizedDescription
                     }
                 }
+                .disabled(model.loading)
 
                 Button("Stage & validate Music database") {
                     do {
@@ -139,11 +145,13 @@ struct ContentView: View {
                         pairingError = error.localizedDescription
                     }
                 }
+                .disabled(model.loading)
 
                 Button("Remove pairing file", role: .destructive) {
                     do { try pairingStore.removePairingFile() }
                     catch { pairingError = error.localizedDescription }
                 }
+                .disabled(model.loading)
             }
 
             Text("Live injection creates a local database backup and keeps a second rollback database on the device. Close Music before performing a live injection and keep the local-device VPN/tunnel active until the operation completes.")
@@ -181,6 +189,62 @@ struct ContentView: View {
     }
 }
 
+private struct ActivityPanel: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if model.loading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "terminal")
+                }
+                Text(model.activityTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Spacer()
+                if !model.loading {
+                    Button("Clear") { model.clearActivityLog() }
+                        .font(.caption)
+                }
+            }
+
+            if let progress = model.activityProgress {
+                ProgressView(value: progress)
+                Text("\(Int(progress * 100))%")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else if model.loading {
+                ProgressView()
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(model.activityLog.enumerated()), id: \.offset) { index, line in
+                            Text(line)
+                                .font(.caption2.monospaced())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id(index)
+                        }
+                    }
+                }
+                .frame(maxHeight: 110)
+                .onChange(of: model.activityLog.count) { count in
+                    if count > 0 {
+                        withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Divider() }
+    }
+}
+
 private struct SongRow: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var pairingStore: PairingFileStore
@@ -210,6 +274,7 @@ private struct SongRow: View {
                     Image(systemName: "testtube.2")
                 }
                 .buttonStyle(.borderless)
+                .disabled(model.loading)
                 .help("Simulate Music database injection locally")
 
                 Button {
@@ -218,6 +283,7 @@ private struct SongRow: View {
                     Image(systemName: "arrow.up.doc.fill")
                 }
                 .buttonStyle(.borderless)
+                .disabled(model.loading)
                 .help("Inject into the system Music library")
                 .confirmationDialog(
                     "Inject this track into Music?",
@@ -245,6 +311,7 @@ private struct SongRow: View {
                 Image(systemName: "square.and.arrow.down")
             }
             .buttonStyle(.borderless)
+            .disabled(model.loading)
         }
     }
 }
