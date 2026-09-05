@@ -146,7 +146,7 @@ struct ContentView: View {
                 }
             }
 
-            Text("Stage & validate downloads MediaLibrary.sqlitedb into the app's temporary container, runs SQLite quick_check, validates the expected schema and rolls back a test transaction. It does not write anything back to /iTunes_Control.")
+            Text("Live injection creates a local database backup and keeps a second rollback database on the device. Close Music before performing a live injection and keep the local-device VPN/tunnel active until the operation completes.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -184,6 +184,7 @@ struct ContentView: View {
 private struct SongRow: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var pairingStore: PairingFileStore
+    @State private var confirmLiveInjection = false
     let song: Song
 
     var body: some View {
@@ -210,6 +211,32 @@ private struct SongRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Simulate Music database injection locally")
+
+                Button {
+                    confirmLiveInjection = true
+                } label: {
+                    Image(systemName: "arrow.up.doc.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Inject into the system Music library")
+                .confirmationDialog(
+                    "Inject this track into Music?",
+                    isPresented: $confirmLiveInjection,
+                    titleVisibility: .visible
+                ) {
+                    Button("Inject into Music", role: .destructive) {
+                        Task {
+                            await model.commitInjection(
+                                song,
+                                pairingFileURL: pairingURL,
+                                requiresRemotePairing: pairingStore.requiresRPPairingFile
+                            )
+                        }
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("Close the Music app first. This writes the audio file and replaces MediaLibrary.sqlitedb after making both local and on-device backups.")
+                }
             }
 
             Button {
