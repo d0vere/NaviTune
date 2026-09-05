@@ -17,11 +17,13 @@ final class BackgroundSyncCoordinator {
         guard #available(iOS 26.0, *), !registered else { return }
         registered = true
         BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { [weak self] rawTask in
-            guard let self, let task = rawTask as? BGContinuedProcessingTask else {
-                rawTask.setTaskCompleted(success: false)
-                return
+            Task { @MainActor in
+                guard let self, let task = rawTask as? BGContinuedProcessingTask else {
+                    rawTask.setTaskCompleted(success: false)
+                    return
+                }
+                self.handle(task)
             }
-            self.handle(task)
         }
     }
 
@@ -48,31 +50,25 @@ final class BackgroundSyncCoordinator {
         task.progress.totalUnitCount = 1000
         task.progress.completedUnitCount = 0
 
-        let work = Task {
+        let work = Task { @MainActor in
             do {
                 let result = try await FullLibrarySyncService().syncUsingSavedConfiguration { [weak self, weak task] text, value in
                     guard let task else { return }
                     task.progress.completedUnitCount = Int64((value * 1000).rounded())
                     task.updateTitle("NaviTune Sync", subtitle: text)
-                    await MainActor.run {
-                        self?.progressObserver?(text, value)
-                    }
+                    self?.progressObserver?(text, value)
                 }
                 task.progress.completedUnitCount = 1000
                 task.updateTitle("NaviTune Sync", subtitle: "Complete")
                 task.setTaskCompleted(success: true)
-                await MainActor.run {
-                    self.completionObserver?(.success(result))
-                    self.progressObserver = nil
-                    self.completionObserver = nil
-                }
+                completionObserver?(.success(result))
+                progressObserver = nil
+                completionObserver = nil
             } catch {
                 task.setTaskCompleted(success: false)
-                await MainActor.run {
-                    self.completionObserver?(.failure(error))
-                    self.progressObserver = nil
-                    self.completionObserver = nil
-                }
+                completionObserver?(.failure(error))
+                progressObserver = nil
+                completionObserver = nil
             }
         }
 
@@ -93,7 +89,9 @@ final class BackgroundExecutionLease {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
-            self?.end()
+            Task { @MainActor in
+                self?.end()
+            }
         }
     }
 
@@ -109,7 +107,10 @@ final class BackgroundExecutionLease {
 
     deinit {
         if identifier != .invalid {
-            UIApplication.shared.endBackgroundTask(identifier)
+            let backgroundIdentifier = identifier
+            Task { @MainActor in
+                UIApplication.shared.endBackgroundTask(backgroundIdentifier)
+            }
         }
     }
 }
