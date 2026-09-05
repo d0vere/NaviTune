@@ -7,7 +7,7 @@ struct ContentView: View {
     @State private var showingPairingImporter = false
     @State private var pairingError: String?
     @State private var deviceStatus: String?
-    @State private var confirmGhostCleanup = false
+    @State private var confirmCleanup = false
 
     var body: some View {
         NavigationStack {
@@ -18,16 +18,13 @@ struct ContentView: View {
             .navigationTitle("Navi Music Sync")
             .toolbar {
                 if model.connected {
-                    Button {
-                        Task { await model.refresh() }
-                    } label: { Image(systemName: "arrow.clockwise") }
-                    .disabled(model.loading)
+                    Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                        .disabled(model.loading)
                 }
             }
             .safeAreaInset(edge: .bottom) {
                 if model.loading || !model.activityLog.isEmpty {
-                    ActivityPanel()
-                        .environmentObject(model)
+                    ActivityPanel().environmentObject(model)
                 }
             }
             .alert("NavidromeMusicSync", isPresented: Binding(
@@ -73,14 +70,11 @@ struct ContentView: View {
                     .textInputAutocapitalization(.never)
                 SecureField("Password", text: $model.password)
             }
-
             pairingSection
-
             Section {
                 Button("Connect") { Task { await model.connect() } }
                     .disabled(model.server.isEmpty || model.username.isEmpty || model.password.isEmpty || model.loading)
             }
-
             Section {
                 Text("Use HTTPS when connecting to a server over the internet.")
                     .font(.footnote)
@@ -92,83 +86,60 @@ struct ContentView: View {
     private var pairingSection: some View {
         Section("Device pairing") {
             HStack {
-                Label(
-                    pairingStore.status,
-                    systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "iphone.and.arrow.forward"
-                )
+                Label(pairingStore.status, systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "iphone.and.arrow.forward")
                 Spacer()
                 if pairingStore.pairingFileURL != nil {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 }
             }
 
-            Button("Import \(pairingStore.expectedFilename)") {
-                showingPairingImporter = true
-            }
+            Button("Import \(pairingStore.expectedFilename)") { showingPairingImporter = true }
 
             if let pairingURL = pairingStore.pairingFileURL {
                 Button("Test device connection") {
                     do {
-                        try DeviceBridge().testConnection(
-                            pairingFileURL: pairingURL,
-                            requiresRemotePairing: pairingStore.requiresRPPairingFile
-                        )
+                        try DeviceBridge().testConnection(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
                         deviceStatus = "Device heartbeat connected successfully. idevice transport is working."
-                    } catch {
-                        pairingError = error.localizedDescription
-                    }
+                    } catch { pairingError = error.localizedDescription }
                 }
                 .disabled(model.loading)
 
                 Button("Inspect Music library (read-only)") {
                     do {
-                        let result = try DeviceBridge().inspectSystemMusicLibrary(
-                            pairingFileURL: pairingURL,
-                            requiresRemotePairing: pairingStore.requiresRPPairingFile
-                        )
+                        let result = try DeviceBridge().inspectSystemMusicLibrary(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
                         deviceStatus = result.summary
-                    } catch {
-                        pairingError = error.localizedDescription
-                    }
+                    } catch { pairingError = error.localizedDescription }
                 }
                 .disabled(model.loading)
 
                 Button("Stage & validate Music database") {
                     do {
-                        let snapshot = try DeviceBridge().stageSystemMusicDatabase(
-                            pairingFileURL: pairingURL,
-                            requiresRemotePairing: pairingStore.requiresRPPairingFile
-                        )
+                        let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
                         let report = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
                         deviceStatus = report.summary
-                    } catch {
-                        pairingError = error.localizedDescription
-                    }
+                    } catch { pairingError = error.localizedDescription }
                 }
                 .disabled(model.loading)
 
-                Button("Clean legacy ghost tracks", role: .destructive) {
-                    confirmGhostCleanup = true
-                }
-                .disabled(model.loading)
-                .confirmationDialog(
-                    "Remove tracks created by the broken test builds?",
-                    isPresented: $confirmGhostCleanup,
-                    titleVisibility: .visible
-                ) {
-                    Button("Clean ghost tracks", role: .destructive) {
-                        Task {
-                            await model.cleanLegacyGhostTracks(
-                                pairingFileURL: pairingURL,
-                                requiresRemotePairing: pairingStore.requiresRPPairingFile
-                            )
+                Button("Clean duplicates & ghost tracks", role: .destructive) { confirmCleanup = true }
+                    .disabled(model.loading)
+                    .confirmationDialog(
+                        "Consolidate Navi Music Sync duplicates?",
+                        isPresented: $confirmCleanup,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Clean duplicates", role: .destructive) {
+                            Task {
+                                await model.cleanDuplicateAndGhostTracks(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
+                            }
                         }
+                        Button("Cancel", role: .cancel) { }
+                    } message: {
+                        Text("Close Music first. Navi-owned duplicates are grouped by the Navidrome song hash. Original/lossless files are preferred over old MP3 test copies. A rollback database is created before replacement.")
                     }
-                    Button("Cancel", role: .cancel) { }
-                } message: {
-                    Text("Close Music first. Only legacy Navi Music Sync filenames are targeted. The current 16-hex MP3 imports are preserved, and a rollback database is created before replacement.")
-                }
 
                 Button("Remove pairing file", role: .destructive) {
                     do { try pairingStore.removePairingFile() }
@@ -177,7 +148,7 @@ struct ContentView: View {
                 .disabled(model.loading)
             }
 
-            Text("Live injection and ghost cleanup create a local database backup and keep a second rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
+            Text("Live injection and cleanup create a local database backup and keep a rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -186,12 +157,9 @@ struct ContentView: View {
     private var library: some View {
         List {
             pairingSection
-
             if !model.starred.isEmpty {
                 Section("Starred") {
-                    ForEach(model.starred.prefix(20)) { song in
-                        SongRow(song: song)
-                    }
+                    ForEach(model.starred.prefix(20)) { song in SongRow(song: song) }
                 }
             }
             Section("Newest albums") {
@@ -218,47 +186,28 @@ private struct ActivityPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                if model.loading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "terminal")
-                }
-                Text(model.activityTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                if model.loading { ProgressView().controlSize(.small) }
+                else { Image(systemName: "terminal") }
+                Text(model.activityTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Spacer()
-                if !model.loading {
-                    Button("Clear") { model.clearActivityLog() }
-                        .font(.caption)
-                }
+                if !model.loading { Button("Clear") { model.clearActivityLog() }.font(.caption) }
             }
-
             if let progress = model.activityProgress {
                 ProgressView(value: progress)
-                Text("\(Int(progress * 100))%")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            } else if model.loading {
-                ProgressView()
-            }
+                Text("\(Int(progress * 100))%").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            } else if model.loading { ProgressView() }
 
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 3) {
                         ForEach(Array(model.activityLog.enumerated()), id: \.offset) { index, line in
-                            Text(line)
-                                .font(.caption2.monospaced())
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .id(index)
+                            Text(line).font(.caption2.monospaced()).frame(maxWidth: .infinity, alignment: .leading).id(index)
                         }
                     }
                 }
                 .frame(maxHeight: 110)
                 .onChange(of: model.activityLog.count) { count in
-                    if count > 0 {
-                        withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) }
-                    }
+                    if count > 0 { withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) } }
                 }
             }
         }
@@ -278,63 +227,35 @@ private struct SongRow: View {
         HStack {
             VStack(alignment: .leading) {
                 Text(song.title)
-                Text(song.artist ?? "Unknown artist")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(song.artist ?? "Unknown artist").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
 
             if let pairingURL = pairingStore.pairingFileURL {
                 Button {
-                    Task {
-                        await model.simulateLocalInjection(
-                            song,
-                            pairingFileURL: pairingURL,
-                            requiresRemotePairing: pairingStore.requiresRPPairingFile
-                        )
-                    }
-                } label: {
-                    Image(systemName: "testtube.2")
-                }
+                    Task { await model.simulateLocalInjection(song, pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile) }
+                } label: { Image(systemName: "testtube.2") }
                 .buttonStyle(.borderless)
                 .disabled(model.loading)
                 .help("Simulate Music database injection locally")
 
-                Button {
-                    confirmLiveInjection = true
-                } label: {
-                    Image(systemName: "arrow.up.doc.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.loading)
-                .help("Inject into the system Music library")
-                .confirmationDialog(
-                    "Inject this track into Music?",
-                    isPresented: $confirmLiveInjection,
-                    titleVisibility: .visible
-                ) {
-                    Button("Inject into Music", role: .destructive) {
-                        Task {
-                            await model.commitInjection(
-                                song,
-                                pairingFileURL: pairingURL,
-                                requiresRemotePairing: pairingStore.requiresRPPairingFile
-                            )
+                Button { confirmLiveInjection = true } label: { Image(systemName: "arrow.up.doc.fill") }
+                    .buttonStyle(.borderless)
+                    .disabled(model.loading)
+                    .help("Inject original-quality audio and artwork into Music")
+                    .confirmationDialog("Inject this track into Music?", isPresented: $confirmLiveInjection, titleVisibility: .visible) {
+                        Button("Inject into Music", role: .destructive) {
+                            Task { await model.commitInjection(song, pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile) }
                         }
+                        Button("Cancel", role: .cancel) { }
+                    } message: {
+                        Text("Close Music first. The original Navidrome audio is preserved and album artwork is imported when available. Database backups are created before write-back.")
                     }
-                    Button("Cancel", role: .cancel) { }
-                } message: {
-                    Text("Close the Music app first. This writes the audio file and replaces MediaLibrary.sqlitedb after making both local and on-device backups.")
-                }
             }
 
-            Button {
-                Task { await model.downloadAndImport(song) }
-            } label: {
-                Image(systemName: "square.and.arrow.down")
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.loading)
+            Button { Task { await model.downloadAndImport(song) } } label: { Image(systemName: "square.and.arrow.down") }
+                .buttonStyle(.borderless)
+                .disabled(model.loading)
         }
     }
 }
