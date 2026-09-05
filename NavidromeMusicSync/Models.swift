@@ -56,6 +56,8 @@ struct Song: Identifiable, Decodable, Hashable {
     let title: String
     let album: String?
     let artist: String?
+    let artistId: String?
+    let genre: String?
     let suffix: String?
     let coverArt: String?
     let track: Int?
