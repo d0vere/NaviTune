@@ -55,29 +55,32 @@ actor NavidromeClient {
         return envelope.response.album?.song ?? []
     }
 
+    func coverArt(id: String, size: Int = 1200) async throws -> Data {
+        let url = try endpoint("getCoverArt", extra: [
+            URLQueryItem(name: "id", value: id),
+            URLQueryItem(name: "size", value: String(size))
+        ])
+        let (data, response) = try await session.data(from: url)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+            throw ClientError.invalidResponse
+        }
+        return data
+    }
+
     func download(_ song: Song) async throws -> URL {
         try await downloadFile(song: song, extra: [], extensionOverride: song.suffix ?? "m4a", filenameSuffix: "")
     }
 
+    /// Preserve the source file byte-for-byte for Music injection.
     func downloadForMusicInjection(_ song: Song) async throws -> URL {
-        try cleanupOldInjectionStagingFiles()
-        return try await downloadFile(
-            song: song,
-            extra: [],
-            extensionOverride: song.suffix ?? "m4a",
-            filenameSuffix: ".music"
-        )
+        try await downloadFile(song: song, extra: [], extensionOverride: song.suffix ?? "m4a", filenameSuffix: ".music")
     }
 
-    private func cleanupOldInjectionStagingFiles() throws {
-        let fm = FileManager.default
-        let root = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Downloads", isDirectory: true)
-        guard fm.fileExists(atPath: root.path) else { return }
-
-        let files = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-        for file in files where file.lastPathComponent.contains(".music.") {
-            try? fm.removeItem(at: file)
+    func cleanupOldInjectionStaging(except keepURL: URL? = nil) {
+        let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Downloads", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+        for file in files where file.lastPathComponent.contains(".music.") && file != keepURL {
+            try? FileManager.default.removeItem(at: file)
         }
     }
 
