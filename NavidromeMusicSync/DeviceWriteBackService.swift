@@ -48,18 +48,6 @@ struct DeviceWriteBackResult {
     }
 }
 
-/// Performs the destructive portion of injection only after the database has
-/// already been modified and quick-checked locally.
-///
-/// Commit protocol:
-/// 1. upload audio to a temporary AFC path and verify size;
-/// 2. atomically rename it into F00;
-/// 3. upload the quick-checked DB to a temporary path and verify size;
-/// 4. rename the live DB to a persistent rollback backup;
-/// 5. rename the temporary DB into the live path;
-/// 6. remove stale WAL/SHM files.
-///
-/// If step 5 fails, the original DB is renamed back automatically.
 final class DeviceWriteBackService {
     private static let deviceHost = "10.7.0.1"
     private static let remotePairingPort: UInt16 = 49152
@@ -86,7 +74,7 @@ final class DeviceWriteBackService {
             throw DeviceWriteBackError.localFileReadFailed("invalid SQLite database")
         }
 
-        return try withAfc(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { afc in
+        let result = try withAfc(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { afc in
             _ = Self.musicDirectory.withCString { afc_make_directory(afc, $0) }
 
             let finalAudioPath = "\(Self.musicDirectory)/\(metadata.remoteFilename)"
@@ -137,6 +125,14 @@ final class DeviceWriteBackService {
                 databaseBackupPath: Self.databaseBackupPath
             )
         }
+
+        // The local Navidrome download is only a staging file. Once the audio
+        // and database have both been committed successfully to Music, remove
+        // the app-owned copy so the track occupies space only in the native
+        // Music library. On any failure this line is never reached.
+        try? FileManager.default.removeItem(at: metadata.localURL)
+
+        return result
     }
 
     private func write(data: Data, to path: String, afc: AfcClientHandle) throws {
