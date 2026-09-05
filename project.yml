@@ -8,7 +8,7 @@ settings:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
 targets:
-  NavidromeMusicSync:
+  NaviTune:
     type: application
     platform: iOS
     sources:
