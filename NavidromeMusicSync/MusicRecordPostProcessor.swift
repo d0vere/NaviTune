@@ -23,10 +23,9 @@ final class MusicRecordPostProcessor {
             if db != nil { sqlite3_close(db) }
             throw MusicRecordPostProcessorError.openFailed
         }
-        defer { sqlite3_close(db) }
 
-        try exec(db, "BEGIN IMMEDIATE")
         do {
+            try exec(db, "BEGIN IMMEDIATE")
             let duplicates = try itemPIDs(db, location: remoteFilename).filter { $0 != currentItemPID }
             for pid in duplicates {
                 for table in ["lyrics", "chapter", "item_video", "item_search", "item_store", "item_stats", "item_playback", "item_extra", "item"] {
@@ -72,10 +71,20 @@ final class MusicRecordPostProcessor {
             }
 
             try exec(db, "COMMIT")
+            sqlite3_close(db)
+            db = nil
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            sqlite3_close(db)
+            db = nil
             throw error
         }
+
+        // Music displays item_extra.title but sorts by numeric sort_map/order
+        // references. Rebuild those references after every injection so newly
+        // inserted titles participate in the same alphabetical order as the
+        // pre-existing library.
+        try MusicSortRepair().repair(databaseURL: databaseURL)
     }
 
     private func itemPIDs(_ db: OpaquePointer, location: String) throws -> [Int64] {
