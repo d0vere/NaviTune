@@ -183,6 +183,7 @@ struct ContentView: View {
 
 private struct SongRow: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var pairingStore: PairingFileStore
     let song: Song
 
     var body: some View {
@@ -194,6 +195,23 @@ private struct SongRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+
+            if let pairingURL = pairingStore.pairingFileURL {
+                Button {
+                    Task {
+                        await model.simulateLocalInjection(
+                            song,
+                            pairingFileURL: pairingURL,
+                            requiresRemotePairing: pairingStore.requiresRPPairingFile
+                        )
+                    }
+                } label: {
+                    Image(systemName: "testtube.2")
+                }
+                .buttonStyle(.borderless)
+                .help("Simulate Music database injection locally")
+            }
+
             Button {
                 Task { await model.downloadAndImport(song) }
             } label: {
