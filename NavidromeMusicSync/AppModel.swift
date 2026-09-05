@@ -40,7 +40,6 @@ final class AppModel: ObservableObject {
             self.albums = try await albums
             self.starred = try await starred
             progress("Connected", 1.0)
-            message = "Connected to Navidrome. Settings saved on this iPhone."
             finishActivity()
         } catch {
             failActivity(error)
