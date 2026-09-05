@@ -10,7 +10,7 @@ struct NavidromeSettings: Codable {
 enum NavidromeSettingsStore {
     private static let serverKey = "navidrome.server"
     private static let usernameKey = "navidrome.username"
-    private static let keychainService = "com.d0vere.NavidromeMusicSync.navidrome"
+    private static let keychainService = "com.d0vere.NaviTune.navidrome"
     private static let passwordAccount = "password"
     private static let settingsFilename = "NavidromeSettings.plist"
 
@@ -87,12 +87,12 @@ enum NavidromeSettingsStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: passwordAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+            kSecReturnData as String] = true
+        var fixedQuery = query
+        fixedQuery[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        guard SecItemCopyMatching(fixedQuery as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
