@@ -32,6 +32,9 @@ struct InjectionSongMetadata {
         self.fileExtension = ext
         self.remoteFilename = Self.remoteFilename(for: song.id, ext: ext)
         InjectionMetadataRegistry.setGenre(self.genre, for: self.remoteFilename)
+        if let artistID = song.artistId, !artistID.isEmpty {
+            InjectionMetadataRegistry.setArtistID(artistID, for: self.remoteFilename)
+        }
 
         let asset = AVURLAsset(url: localURL)
         let seconds = CMTimeGetSeconds(asset.duration)
