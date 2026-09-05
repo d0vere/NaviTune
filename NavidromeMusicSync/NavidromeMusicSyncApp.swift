@@ -11,6 +11,7 @@ struct NavidromeMusicSyncApp: App {
                 ContentView()
                 VStack(alignment: .trailing, spacing: 8) {
                     EmergencyLibraryRestoreButton()
+                    MusicLibraryWipeButton()
                     FullLibrarySyncButton()
                 }
             }
