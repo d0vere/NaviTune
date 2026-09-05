@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CryptoKit
 
 struct InjectionSongMetadata {
     let navidromeID: String
@@ -34,10 +35,8 @@ struct InjectionSongMetadata {
     }
 
     private static func remoteFilename(for navidromeID: String, ext: String) -> String {
-        let clean = navidromeID
-            .uppercased()
-            .filter { $0.isLetter || $0.isNumber }
-        let stem = String(clean.prefix(12)).padding(toLength: 12, withPad: "0", startingAt: 0)
+        let digest = SHA256.hash(data: Data(navidromeID.utf8))
+        let stem = digest.prefix(8).map { String(format: "%02X", $0) }.joined()
         return "\(stem).\(ext)"
     }
 }
