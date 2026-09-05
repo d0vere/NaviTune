@@ -35,3 +35,4 @@ targets:
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lidevice_ffi"
+          - "-lsqlite3"
