@@ -8,12 +8,9 @@ enum ExistingArtworkRepairError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .openFailed:
-            return "Could not open the Music database for artwork repair."
-        case .unsupportedSchema:
-            return "This Music database does not expose the artwork mapping tables required for repair."
-        case .sqlFailed(let detail):
-            return "Existing artwork repair failed: \(detail)"
+        case .openFailed: return "Could not open the Music database for artwork repair."
+        case .unsupportedSchema: return "This Music database does not expose the artwork mapping tables required for repair."
+        case .sqlFailed(let detail): return "Existing artwork repair failed: \(detail)"
         }
     }
 }
@@ -25,14 +22,12 @@ struct ExistingArtworkRepairResult {
 
     var summary: String {
         if repairedTracks == 0 {
-            return "No existing Navi tracks needed an item-level artwork repair. \(skippedTracks) Navi tracks had no usable album artwork token."
+            return "No existing Navi tracks needed an artwork repair. \(skippedTracks) Navi tracks had no usable album artwork token."
         }
-        return "Repaired item-level artwork for \(repairedTracks) existing Navi track(s). \(skippedTracks) track(s) were skipped because no album artwork token was available."
+        return "Repaired song and artist artwork mappings for \(repairedTracks) existing Navi track(s). \(skippedTracks) track(s) were skipped because no album artwork token was available."
     }
 }
 
-/// Repairs tracks imported before the working ByeTunes item-artwork mapping was
-/// added. Existing album artwork is reused; no image or audio file is copied.
 final class ExistingArtworkRepairService {
     func repair(databaseURL: URL) throws -> ExistingArtworkRepairResult {
         var handle: OpaquePointer?
@@ -42,9 +37,7 @@ final class ExistingArtworkRepairService {
         }
         defer { sqlite3_close(db) }
 
-        guard try tableExists(db, "item"),
-              try tableExists(db, "item_extra"),
-              try tableExists(db, "best_artwork_token") else {
+        guard try tableExists(db, "item"), try tableExists(db, "item_extra"), try tableExists(db, "best_artwork_token") else {
             throw ExistingArtworkRepairError.unsupportedSchema
         }
 
@@ -60,14 +53,13 @@ final class ExistingArtworkRepairService {
                     continue
                 }
 
-                // Remove the incorrect experimental mapping used by build #59.
                 try exec(db, "DELETE FROM best_artwork_token WHERE entity_pid = \(track.itemPID) AND entity_type = 1 AND artwork_type = 5")
-
-                // This is the mapping used by ByeTunes for an individual Music item.
-                try upsertItemArtwork(db, itemPID: track.itemPID, token: albumToken)
+                try upsertArtwork(db, entityPID: track.itemPID, entityType: 0, artworkType: 1, token: albumToken)
+                if track.artistPID > 0 {
+                    try upsertArtwork(db, entityPID: track.artistPID, entityType: 2, artworkType: 1, token: albumToken)
+                }
                 repaired += 1
             }
-
             try exec(db, "COMMIT")
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
@@ -92,10 +84,11 @@ final class ExistingArtworkRepairService {
     private struct Track {
         let itemPID: Int64
         let albumPID: Int64
+        let artistPID: Int64
     }
 
     private func naviTracks(_ db: OpaquePointer) throws -> [Track] {
-        let sql = "SELECT i.item_pid, i.album_pid, e.location FROM item i JOIN item_extra e ON e.item_pid = i.item_pid"
+        let sql = "SELECT i.item_pid, i.album_pid, i.item_artist_pid, e.location FROM item i JOIN item_extra e ON e.item_pid = i.item_pid"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
         defer { sqlite3_finalize(statement) }
@@ -104,19 +97,15 @@ final class ExistingArtworkRepairService {
         while sqlite3_step(statement) == SQLITE_ROW {
             let itemPID = sqlite3_column_int64(statement, 0)
             let albumPID = sqlite3_column_int64(statement, 1)
-            guard let raw = sqlite3_column_text(statement, 2) else { continue }
+            let artistPID = sqlite3_column_int64(statement, 2)
+            guard let raw = sqlite3_column_text(statement, 3) else { continue }
             let location = String(cString: raw)
             let filename = URL(fileURLWithPath: location).lastPathComponent
             let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
-            guard isModernNaviStem(stem) else { continue }
-            result.append(Track(itemPID: itemPID, albumPID: albumPID))
+            guard stem.count == 16, stem.allSatisfy({ "0123456789ABCDEF".contains($0) }) else { continue }
+            result.append(Track(itemPID: itemPID, albumPID: albumPID, artistPID: artistPID))
         }
         return result
-    }
-
-    private func isModernNaviStem(_ stem: String) -> Bool {
-        guard stem.count == 16 else { return false }
-        return stem.allSatisfy { "0123456789ABCDEF".contains($0) }
     }
 
     private func albumArtworkToken(_ db: OpaquePointer, albumPID: Int64) throws -> String? {
@@ -129,21 +118,22 @@ final class ExistingArtworkRepairService {
         return String(cString: raw)
     }
 
-    private func upsertItemArtwork(_ db: OpaquePointer, itemPID: Int64, token: String) throws {
+    private func upsertArtwork(_ db: OpaquePointer, entityPID: Int64, entityType: Int64, artworkType: Int64, token: String) throws {
         let columns = try tableColumns(db, "best_artwork_token")
         let hasVariant = columns.contains("artwork_variant_type")
         let sql: String
         if hasVariant {
-            sql = "INSERT OR REPLACE INTO best_artwork_token (entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token, fetchable_artwork_source_type, artwork_variant_type) VALUES (?, 0, 1, ?, '', 0, 0)"
+            sql = "INSERT OR REPLACE INTO best_artwork_token (entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token, fetchable_artwork_source_type, artwork_variant_type) VALUES (?, ?, ?, ?, '', 0, 0)"
         } else {
-            sql = "INSERT OR REPLACE INTO best_artwork_token (entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token, fetchable_artwork_source_type) VALUES (?, 0, 1, ?, '', 0)"
+            sql = "INSERT OR REPLACE INTO best_artwork_token (entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token, fetchable_artwork_source_type) VALUES (?, ?, ?, ?, '', 0)"
         }
-
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, itemPID)
-        sqlite3_bind_text(statement, 2, token, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(statement, 1, entityPID)
+        sqlite3_bind_int64(statement, 2, entityType)
+        sqlite3_bind_int64(statement, 3, artworkType)
+        sqlite3_bind_text(statement, 4, token, -1, SQLITE_TRANSIENT)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw sqlError(db) }
     }
 
@@ -160,9 +150,7 @@ final class ExistingArtworkRepairService {
         guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
         defer { sqlite3_finalize(statement) }
         var result = Set<String>()
-        while sqlite3_step(statement) == SQLITE_ROW, let raw = sqlite3_column_text(statement, 1) {
-            result.insert(String(cString: raw))
-        }
+        while sqlite3_step(statement) == SQLITE_ROW, let raw = sqlite3_column_text(statement, 1) { result.insert(String(cString: raw)) }
         return result
     }
 
