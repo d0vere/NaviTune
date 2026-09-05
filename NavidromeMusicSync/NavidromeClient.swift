@@ -43,6 +43,52 @@ actor NavidromeClient {
         return envelope.response.albumList2?.album ?? []
     }
 
+    /// Enumerates the complete Navidrome album catalog using Subsonic pagination.
+    /// This is intentionally deterministic so a full-device sync can be resumed.
+    func allAlbums(pageSize: Int = 500) async throws -> [Album] {
+        var result: [Album] = []
+        var offset = 0
+        let safePageSize = min(max(pageSize, 1), 500)
+        while true {
+            let envelope: SubsonicEnvelope<AlbumListResponse> = try await request("getAlbumList2", extra: [
+                URLQueryItem(name: "type", value: "alphabeticalByName"),
+                URLQueryItem(name: "size", value: String(safePageSize)),
+                URLQueryItem(name: "offset", value: String(offset))
+            ])
+            guard envelope.response.status == "ok" else { throw ClientError.serverRejected(envelope.response.status) }
+            let page = envelope.response.albumList2?.album ?? []
+            result.append(contentsOf: page)
+            if page.count < safePageSize { break }
+            offset += page.count
+        }
+        return result
+    }
+
+    /// Returns every song on the server. Album requests are made in small
+    /// concurrent groups to reduce total catalog scan time without flooding Navidrome.
+    func allSongs() async throws -> [Song] {
+        let albums = try await allAlbums()
+        var songsByAlbum = Array(repeating: [Song](), count: albums.count)
+        let concurrency = 6
+        var start = 0
+        while start < albums.count {
+            let end = min(start + concurrency, albums.count)
+            try await withThrowingTaskGroup(of: (Int, [Song]).self) { group in
+                for index in start..<end {
+                    let albumID = albums[index].id
+                    group.addTask { [self] in
+                        (index, try await songs(in: albumID))
+                    }
+                }
+                for try await (index, songs) in group {
+                    songsByAlbum[index] = songs
+                }
+            }
+            start = end
+        }
+        return songsByAlbum.flatMap { $0 }
+    }
+
     func starredSongs() async throws -> [Song] {
         let envelope: SubsonicEnvelope<StarredResponse> = try await request("getStarred2")
         guard envelope.response.status == "ok" else { throw ClientError.serverRejected(envelope.response.status) }
