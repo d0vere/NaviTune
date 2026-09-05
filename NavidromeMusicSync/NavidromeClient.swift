@@ -66,7 +66,40 @@ actor NavidromeClient {
     }
 
     func download(_ song: Song) async throws -> URL {
-        let remoteURL = try endpoint("download", extra: [URLQueryItem(name: "id", value: song.id)])
+        try await downloadFile(
+            song: song,
+            extra: [],
+            extensionOverride: song.suffix ?? "m4a",
+            filenameSuffix: ""
+        )
+    }
+
+    /// For native Music-library injection we deliberately normalize the audio
+    /// container/codec. Navidrome's download endpoint supports the same
+    /// transcoding options as stream, so this produces a predictable MP3 asset
+    /// regardless of whether the source library contains FLAC/Opus/etc.
+    func downloadForMusicInjection(_ song: Song) async throws -> URL {
+        try await downloadFile(
+            song: song,
+            extra: [
+                URLQueryItem(name: "format", value: "mp3"),
+                URLQueryItem(name: "maxBitRate", value: "320")
+            ],
+            extensionOverride: "mp3",
+            filenameSuffix: ".music"
+        )
+    }
+
+    private func downloadFile(
+        song: Song,
+        extra: [URLQueryItem],
+        extensionOverride: String,
+        filenameSuffix: String
+    ) async throws -> URL {
+        let remoteURL = try endpoint(
+            "download",
+            extra: [URLQueryItem(name: "id", value: song.id)] + extra
+        )
         let (temporaryURL, response) = try await session.download(from: remoteURL)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ClientError.invalidResponse
@@ -75,8 +108,7 @@ actor NavidromeClient {
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let ext = song.suffix ?? "m4a"
-        let destination = root.appendingPathComponent("\(song.id).\(ext)")
+        let destination = root.appendingPathComponent("\(song.id)\(filenameSuffix).\(extensionOverride)")
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
