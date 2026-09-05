@@ -1,0 +1,153 @@
+import Foundation
+import CryptoKit
+import SQLite3
+import UIKit
+
+struct InjectionArtwork {
+    let data: Data
+    let token: String
+    let relativePath: String
+
+    var remotePath: String {
+        "/iTunes_Control/iTunes/Artwork/Originals/\(relativePath)"
+    }
+
+    static func make(from rawData: Data, navidromeCoverID: String) -> InjectionArtwork? {
+        guard let image = UIImage(data: rawData), let jpeg = image.jpegData(compressionQuality: 0.94) else { return nil }
+        let digest = SHA256.hash(data: jpeg)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        let folder = String(hex.prefix(2))
+        let filename = String(hex.dropFirst(2).prefix(30)) + ".jpg"
+        let tokenDigest = SHA256.hash(data: Data((navidromeCoverID + hex).utf8))
+        let token = tokenDigest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        return InjectionArtwork(data: jpeg, token: token, relativePath: "\(folder)/\(filename)")
+    }
+}
+
+enum MusicArtworkDatabaseError: LocalizedError {
+    case openFailed
+    case unsupportedSchema
+    case sqlFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .openFailed: return "Could not open the Music database for artwork metadata."
+        case .unsupportedSchema: return "This Music database does not expose the iOS 26 artwork tables required for local album covers."
+        case .sqlFailed(let detail): return "Artwork database update failed: \(detail)"
+        }
+    }
+}
+
+final class MusicArtworkDatabaseWriter {
+    func attachAlbumArtwork(databaseURL: URL, itemPID: Int64, artwork: InjectionArtwork) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let db else {
+            if db != nil { sqlite3_close(db) }
+            throw MusicArtworkDatabaseError.openFailed
+        }
+        defer { sqlite3_close(db) }
+
+        guard try tableExists(db, "artwork"), try tableExists(db, "artwork_token") else {
+            throw MusicArtworkDatabaseError.unsupportedSchema
+        }
+        guard let albumPID = try scalarInt64(db, "SELECT album_pid FROM item WHERE item_pid = \(itemPID) LIMIT 1") else {
+            throw MusicArtworkDatabaseError.unsupportedSchema
+        }
+
+        try exec(db, "BEGIN IMMEDIATE")
+        do {
+            let tokenColumns = try tableColumns(db, "artwork_token")
+            var tokenValues: [String: SQLValue] = [
+                "artwork_token": .text(artwork.token),
+                "artwork_source_type": .int(300),
+                "artwork_type": .int(6),
+                "entity_pid": .int(albumPID),
+                "entity_type": .int(4),
+                "artwork_variant_type": .int(0)
+            ]
+            for name in ["primary_text_color", "secondary_text_color", "tertiary_text_color", "quaternary_text_color", "background_color", "gradient_text_color", "gradient_color"] where tokenColumns.contains(name) {
+                tokenValues[name] = .text("")
+            }
+            if tokenColumns.contains("gradient_size_start") { tokenValues["gradient_size_start"] = .double(-1) }
+            if tokenColumns.contains("gradient_size_end") { tokenValues["gradient_size_end"] = .double(-1) }
+            try insertDynamic(db, table: "artwork_token", replace: true, values: tokenValues)
+
+            var artworkValues: [String: SQLValue] = [
+                "artwork_token": .text(artwork.token),
+                "artwork_source_type": .int(300),
+                "relative_path": .text(artwork.relativePath),
+                "artwork_type": .int(6),
+                "artwork_variant_type": .int(0)
+            ]
+            let artColumns = try tableColumns(db, "artwork")
+            if artColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
+            try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
+
+            try exec(db, "COMMIT")
+        } catch {
+            _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            throw error
+        }
+    }
+
+    private enum SQLValue { case int(Int64), double(Double), text(String) }
+
+    private func insertDynamic(_ db: OpaquePointer, table: String, replace: Bool, values: [String: SQLValue]) throws {
+        let columns = try tableColumns(db, table)
+        let filtered = values.filter { columns.contains($0.key) }
+        let ordered = filtered.keys.sorted()
+        guard !ordered.isEmpty else { throw MusicArtworkDatabaseError.unsupportedSchema }
+        let verb = replace ? "INSERT OR REPLACE" : "INSERT"
+        let sql = "\(verb) INTO \(table) (\(ordered.joined(separator: ","))) VALUES (\(Array(repeating: "?", count: ordered.count).joined(separator: ",")))"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        for (index, key) in ordered.enumerated() {
+            let pos = Int32(index + 1)
+            switch filtered[key]! {
+            case .int(let value): sqlite3_bind_int64(statement, pos, value)
+            case .double(let value): sqlite3_bind_double(statement, pos, value)
+            case .text(let value): sqlite3_bind_text(statement, pos, value, -1, SQLITE_TRANSIENT)
+            }
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw sqlError(db) }
+    }
+
+    private func tableExists(_ db: OpaquePointer, _ table: String) throws -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, table, -1, SQLITE_TRANSIENT)
+        return sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_int64(statement, 0) > 0
+    }
+
+    private func tableColumns(_ db: OpaquePointer, _ table: String) throws -> Set<String> {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        var result = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 1) { result.insert(String(cString: text)) }
+        return result
+    }
+
+    private func scalarInt64(_ db: OpaquePointer, _ sql: String) throws -> Int64? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return sqlite3_column_int64(statement, 0)
+    }
+
+    private func exec(_ db: OpaquePointer, _ sql: String) throws {
+        var message: UnsafeMutablePointer<CChar>?
+        guard sqlite3_exec(db, sql, nil, nil, &message) == SQLITE_OK else {
+            let detail = message.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(db))
+            if let message { sqlite3_free(message) }
+            throw MusicArtworkDatabaseError.sqlFailed(detail)
+        }
+    }
+
+    private func sqlError(_ db: OpaquePointer) -> MusicArtworkDatabaseError {
+        .sqlFailed(String(cString: sqlite3_errmsg(db)))
+    }
+}
