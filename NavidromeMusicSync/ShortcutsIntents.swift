@@ -3,14 +3,15 @@ import AppIntents
 @available(iOS 16.0, *)
 struct SyncNavidromeLibraryIntent: AppIntent {
     static var title: LocalizedStringResource = "Sync NaviTune Library"
-    static var description = IntentDescription("Compare Music with Navidrome and import only missing tracks in a background-friendly batch.")
+    static var description = IntentDescription("Compare the live Music database with Navidrome and import only missing tracks.")
     static var openAppWhenRun: Bool = false
 
-    func perform() async throws -> some IntentResult & ProvidesDialog {
-        // Keep scheduled Shortcuts executions bounded. If more than one batch is
-        // pending, the next nightly run resumes from the live Music database.
-        let result = try await FullLibrarySyncService().syncUsingSavedConfiguration(maxImports: 25)
-        return .result(dialog: IntentDialog(stringLiteral: result.summary))
+    func perform() async throws -> some IntentResult {
+        // Shortcuts/background executions are intentionally bounded to one
+        // protected batch. The next run re-reads the live Music database and
+        // resumes only with tracks that are still missing.
+        _ = try await FullLibrarySyncService().syncUsingSavedConfiguration(maxImports: 25)
+        return .result()
     }
 }
 
