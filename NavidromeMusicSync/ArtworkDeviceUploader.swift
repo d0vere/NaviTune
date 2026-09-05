@@ -8,33 +8,44 @@ final class ArtworkDeviceUploader {
     private static let originals = "/iTunes_Control/iTunes/Artwork/Originals"
 
     func upload(_ artwork: InjectionArtwork, pairingFileURL: URL, requiresRemotePairing: Bool) throws {
+        let artistArtwork = InjectionMetadataRegistry.takePendingArtistArtwork(forAlbumToken: artwork.token)
         try withAfc(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { afc in
             _ = "/iTunes_Control/iTunes/Artwork".withCString { afc_make_directory(afc, $0) }
             _ = Self.originals.withCString { afc_make_directory(afc, $0) }
-            let folder = artwork.relativePath.components(separatedBy: "/").first ?? "00"
-            let folderPath = "\(Self.originals)/\(folder)"
-            _ = folderPath.withCString { afc_make_directory(afc, $0) }
+            try writeArtwork(artwork, afc: afc)
 
-            let path = artwork.remotePath
-            var file: AfcFileHandle?
-            let openError = path.withCString { afc_file_open(afc, $0, AfcWrOnly, &file) }
-            guard openError == nil, let file else { throw DeviceWriteBackError.remoteOpenFailed(path) }
-            defer { afc_file_close(file) }
-            let writeError = artwork.data.withUnsafeBytes { raw -> UnsafeMutablePointer<IdeviceFfiError>? in
-                guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
-                return afc_file_write(file, base, artwork.data.count)
+            // Artist artwork is enrichment only: never fail a valid song/album
+            // import if the secondary image cannot be written for any reason.
+            if let artistArtwork {
+                try? writeArtwork(artistArtwork, afc: afc)
             }
-            guard writeError == nil else { throw DeviceWriteBackError.remoteWriteFailed(path) }
-
-            var info = AfcFileInfo(size: 0, blocks: 0, creation: 0, modified: 0, st_nlink: nil, st_ifmt: nil, st_link_target: nil)
-            let verifyError = path.withCString { afc_get_file_info(afc, $0, &info) }
-            guard verifyError == nil else {
-                afc_file_info_free(&info)
-                throw DeviceWriteBackError.remoteVerificationFailed(path)
-            }
-            defer { afc_file_info_free(&info) }
-            guard Int(info.size) == artwork.data.count else { throw DeviceWriteBackError.remoteVerificationFailed(path) }
         }
+    }
+
+    private func writeArtwork(_ artwork: InjectionArtwork, afc: AfcClientHandle) throws {
+        let folder = artwork.relativePath.components(separatedBy: "/").first ?? "00"
+        let folderPath = "\(Self.originals)/\(folder)"
+        _ = folderPath.withCString { afc_make_directory(afc, $0) }
+
+        let path = artwork.remotePath
+        var file: AfcFileHandle?
+        let openError = path.withCString { afc_file_open(afc, $0, AfcWrOnly, &file) }
+        guard openError == nil, let file else { throw DeviceWriteBackError.remoteOpenFailed(path) }
+        defer { afc_file_close(file) }
+        let writeError = artwork.data.withUnsafeBytes { raw -> UnsafeMutablePointer<IdeviceFfiError>? in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
+            return afc_file_write(file, base, artwork.data.count)
+        }
+        guard writeError == nil else { throw DeviceWriteBackError.remoteWriteFailed(path) }
+
+        var info = AfcFileInfo(size: 0, blocks: 0, creation: 0, modified: 0, st_nlink: nil, st_ifmt: nil, st_link_target: nil)
+        let verifyError = path.withCString { afc_get_file_info(afc, $0, &info) }
+        guard verifyError == nil else {
+            afc_file_info_free(&info)
+            throw DeviceWriteBackError.remoteVerificationFailed(path)
+        }
+        defer { afc_file_info_free(&info) }
+        guard Int(info.size) == artwork.data.count else { throw DeviceWriteBackError.remoteVerificationFailed(path) }
     }
 
     private func withAfc<T>(pairingFileURL: URL, requiresRemotePairing: Bool, _ body: (AfcClientHandle) throws -> T) throws -> T {
