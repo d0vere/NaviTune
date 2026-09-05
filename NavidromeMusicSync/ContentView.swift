@@ -127,13 +127,26 @@ struct ContentView: View {
                     }
                 }
 
+                Button("Stage & validate Music database") {
+                    do {
+                        let snapshot = try DeviceBridge().stageSystemMusicDatabase(
+                            pairingFileURL: pairingURL,
+                            requiresRemotePairing: pairingStore.requiresRPPairingFile
+                        )
+                        let report = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
+                        deviceStatus = report.summary
+                    } catch {
+                        pairingError = error.localizedDescription
+                    }
+                }
+
                 Button("Remove pairing file", role: .destructive) {
                     do { try pairingStore.removePairingFile() }
                     catch { pairingError = error.localizedDescription }
                 }
             }
 
-            Text("The library inspection is strictly read-only: it opens AFC and reads metadata for /iTunes_Control/iTunes/MediaLibrary.sqlitedb without downloading or changing it. For classic pairing, enable the local-device VPN/tunnel first.")
+            Text("Stage & validate downloads MediaLibrary.sqlitedb into the app's temporary container, runs SQLite quick_check, validates the expected schema and rolls back a test transaction. It does not write anything back to /iTunes_Control.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
