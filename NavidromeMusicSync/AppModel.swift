@@ -65,6 +65,36 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Full pre-write pipeline: Navidrome download -> read-only device snapshot ->
+    /// protected working copy -> schema-aware single-track mutation -> quick_check.
+    /// No AFC upload or device database replacement happens here.
+    func simulateLocalInjection(
+        _ song: Song,
+        pairingFileURL: URL,
+        requiresRemotePairing: Bool
+    ) async {
+        guard let client else { return }
+        loading = true
+        defer { loading = false }
+
+        do {
+            let localFile = try await client.download(song)
+            let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
+
+            let snapshot = try DeviceBridge().stageSystemMusicDatabase(
+                pairingFileURL: pairingFileURL,
+                requiresRemotePairing: requiresRemotePairing
+            )
+            defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
+
+            let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
+            let result = try LocalMusicDatabaseBuilder().addSingleTrack(metadata, to: stage.databaseURL)
+            message = result.summary
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
     func albumSongs(_ album: Album) async -> [Song] {
         guard let client else { return [] }
         do { return try await client.songs(in: album.id) }
