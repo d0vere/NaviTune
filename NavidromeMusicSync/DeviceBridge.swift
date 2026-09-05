@@ -5,6 +5,7 @@ typealias IdevicePairingFileHandle = OpaquePointer
 typealias IdeviceProviderHandle = OpaquePointer
 typealias HeartbeatClientHandle = OpaquePointer
 typealias AfcClientHandle = OpaquePointer
+typealias AfcFileHandle = OpaquePointer
 
 struct DeviceLibraryProbeResult {
     let databaseSize: Int
@@ -19,6 +20,12 @@ struct DeviceLibraryProbeResult {
     }
 }
 
+struct StagedMusicDatabase {
+    let directoryURL: URL
+    let databaseURL: URL
+    let byteCount: Int
+}
+
 final class DeviceBridge {
     enum BridgeError: LocalizedError {
         case pairingFileMissing
@@ -28,6 +35,9 @@ final class DeviceBridge {
         case heartbeatFailed
         case afcConnectionFailed
         case musicDatabaseUnavailable
+        case musicDatabaseReadFailed
+        case invalidSQLiteDatabase
+        case stagingFailed
 
         var errorDescription: String? {
             switch self {
@@ -45,12 +55,19 @@ final class DeviceBridge {
                 return "Heartbeat works, but the AFC file service could not be opened."
             case .musicDatabaseUnavailable:
                 return "AFC is connected, but /iTunes_Control/iTunes/MediaLibrary.sqlitedb could not be read."
+            case .musicDatabaseReadFailed:
+                return "The Music database exists, but AFC could not download its contents."
+            case .invalidSQLiteDatabase:
+                return "The downloaded MediaLibrary.sqlitedb does not have a valid SQLite header."
+            case .stagingFailed:
+                return "The Music database was downloaded but could not be staged locally."
             }
         }
     }
 
     private static let deviceHost = "10.7.0.1"
     private static let mediaDatabasePath = "/iTunes_Control/iTunes/MediaLibrary.sqlitedb"
+    private static let sqliteHeader = Data("SQLite format 3\0".utf8)
 
     func testConnection(pairingFileURL: URL, requiresRemotePairing: Bool) throws {
         try withClassicProvider(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { provider in
@@ -66,14 +83,7 @@ final class DeviceBridge {
     /// Read-only probe. It opens AFC and asks only for metadata about the Music
     /// database; it does not download, alter, rename or upload anything.
     func inspectSystemMusicLibrary(pairingFileURL: URL, requiresRemotePairing: Bool) throws -> DeviceLibraryProbeResult {
-        try withClassicProvider(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { provider in
-            var afc: AfcClientHandle?
-            let afcError = afc_client_connect(provider, &afc)
-            guard afcError == nil, let afc else {
-                throw BridgeError.afcConnectionFailed
-            }
-            defer { afc_client_free(afc) }
-
+        try withAfc(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { afc in
             var info = AfcFileInfo(
                 size: 0,
                 blocks: 0,
@@ -95,6 +105,67 @@ final class DeviceBridge {
 
             let modified: Date? = info.modified > 0 ? Date(timeIntervalSince1970: TimeInterval(info.modified)) : nil
             return DeviceLibraryProbeResult(databaseSize: Int(info.size), databaseModified: modified)
+        }
+    }
+
+    /// Downloads the current Music database via AFC and writes it only into this
+    /// app's temporary directory. Nothing is written back to the phone's
+    /// /iTunes_Control hierarchy.
+    func stageSystemMusicDatabase(pairingFileURL: URL, requiresRemotePairing: Bool) throws -> StagedMusicDatabase {
+        let data: Data = try withAfc(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { afc in
+            var file: AfcFileHandle?
+            let openError = Self.mediaDatabasePath.withCString { path in
+                afc_file_open(afc, path, AfcRdOnly, &file)
+            }
+            guard openError == nil, let file else {
+                throw BridgeError.musicDatabaseUnavailable
+            }
+            defer { afc_file_close(file) }
+
+            var bytes: UnsafeMutablePointer<UInt8>?
+            var length: Int = 0
+            let readError = afc_file_read_entire(file, &bytes, &length)
+            guard readError == nil, let bytes, length > 0 else {
+                if let bytes { free(bytes) }
+                throw BridgeError.musicDatabaseReadFailed
+            }
+            defer { free(bytes) }
+
+            let downloaded = Data(bytes: bytes, count: length)
+            guard downloaded.count >= Self.sqliteHeader.count,
+                  downloaded.prefix(Self.sqliteHeader.count) == Self.sqliteHeader else {
+                throw BridgeError.invalidSQLiteDatabase
+            }
+            return downloaded
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MusicLibrarySnapshot-\(UUID().uuidString)", isDirectory: true)
+        let databaseURL = directory.appendingPathComponent("MediaLibrary.sqlitedb")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: databaseURL, options: .atomic)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw BridgeError.stagingFailed
+        }
+
+        return StagedMusicDatabase(directoryURL: directory, databaseURL: databaseURL, byteCount: data.count)
+    }
+
+    private func withAfc<T>(
+        pairingFileURL: URL,
+        requiresRemotePairing: Bool,
+        _ body: (AfcClientHandle) throws -> T
+    ) throws -> T {
+        try withClassicProvider(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing) { provider in
+            var afc: AfcClientHandle?
+            let afcError = afc_client_connect(provider, &afc)
+            guard afcError == nil, let afc else {
+                throw BridgeError.afcConnectionFailed
+            }
+            defer { afc_client_free(afc) }
+            return try body(afc)
         }
     }
 
