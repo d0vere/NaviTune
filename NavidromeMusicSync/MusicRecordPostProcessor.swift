@@ -17,7 +17,7 @@ enum MusicRecordPostProcessorError: LocalizedError {
 /// The main builder already checkpoints and quick-checks the database, so this
 /// pass only performs targeted row updates/de-duplication in one transaction.
 final class MusicRecordPostProcessor {
-    func finalize(databaseURL: URL, currentItemPID: Int64, remoteFilename: String) throws {
+    func finalize(databaseURL: URL, currentItemPID: Int64, remoteFilename: String, repairSort: Bool = true) throws {
         var dbPointer: OpaquePointer?
         guard sqlite3_open_v2(databaseURL.path, &dbPointer, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
               let db = dbPointer else {
@@ -85,7 +85,9 @@ final class MusicRecordPostProcessor {
             throw error
         }
 
-        try MusicSortRepair().repair(databaseURL: databaseURL)
+        if repairSort {
+            try MusicSortRepair().repair(databaseURL: databaseURL)
+        }
     }
 
     private func ensureGenre(_ db: OpaquePointer, name: String, representativeItemPID: Int64) throws -> (id: Int64, order: Int64, section: Int64) {
