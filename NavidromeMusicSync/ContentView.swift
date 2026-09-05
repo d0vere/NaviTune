@@ -115,13 +115,25 @@ struct ContentView: View {
                     }
                 }
 
+                Button("Inspect Music library (read-only)") {
+                    do {
+                        let result = try DeviceBridge().inspectSystemMusicLibrary(
+                            pairingFileURL: pairingURL,
+                            requiresRemotePairing: pairingStore.requiresRPPairingFile
+                        )
+                        deviceStatus = result.summary
+                    } catch {
+                        pairingError = error.localizedDescription
+                    }
+                }
+
                 Button("Remove pairing file", role: .destructive) {
                     do { try pairingStore.removePairingFile() }
                     catch { pairingError = error.localizedDescription }
                 }
             }
 
-            Text("For the classic pairing transport, enable the local-device VPN/tunnel before testing. iOS 26.4+ requires the newer RP pairing transport, which is being integrated separately.")
+            Text("The library inspection is strictly read-only: it opens AFC and reads metadata for /iTunes_Control/iTunes/MediaLibrary.sqlitedb without downloading or changing it. For classic pairing, enable the local-device VPN/tunnel first.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
