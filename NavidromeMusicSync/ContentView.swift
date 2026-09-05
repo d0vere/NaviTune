@@ -85,6 +85,11 @@ struct ContentView: View {
             .task {
                 if !model.connected && !model.server.isEmpty && !model.username.isEmpty && !model.password.isEmpty {
                     await model.connect()
+                    // The readiness card already shows a successful connection.
+                    // Keep the launch flow silent; alerts are reserved for failures.
+                    if model.connected {
+                        model.message = nil
+                    }
                 }
             }
         }
@@ -130,9 +135,21 @@ struct ContentView: View {
             }
 
             HStack(spacing: 10) {
-                StatusPill(title: "Navidrome", ready: model.connected, symbol: "server.rack")
-                StatusPill(title: "Pairing", ready: pairingStore.pairingFileURL != nil, symbol: "iphone")
-                StatusPill(title: "Music", ready: true, symbol: "music.note")
+                StatusPill(
+                    title: "Navidrome",
+                    ready: model.connected,
+                    symbol: "server.rack"
+                )
+                StatusPill(
+                    title: "Pairing",
+                    ready: pairingStore.pairingFileURL != nil,
+                    symbol: "iphone"
+                )
+                StatusPill(
+                    title: "Music",
+                    ready: true,
+                    symbol: "music.note"
+                )
             }
         }
         .cardStyle()
@@ -153,7 +170,7 @@ struct ContentView: View {
                 Spacer()
                 if model.loading {
                     ProgressView()
-                        .controlSize(.regular)
+                        .controlSize(.large)
                         .frame(width: 32, height: 32)
                 } else {
                     Image(systemName: "arrow.down.circle.fill")
@@ -174,7 +191,9 @@ struct ContentView: View {
             }
 
             Button {
-                if !model.connected || pairingStore.pairingFileURL == nil {
+                if !model.connected {
+                    showingSettings = true
+                } else if pairingStore.pairingFileURL == nil {
                     showingSettings = true
                 } else {
                     confirmSync = true
@@ -207,9 +226,11 @@ struct ContentView: View {
                     .font(.headline)
                 Spacer()
                 if model.connected {
-                    Button("Refresh") { Task { await model.refresh() } }
-                        .font(.caption.weight(.semibold))
-                        .disabled(model.loading)
+                    Button("Refresh") {
+                        Task { await model.refresh() }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .disabled(model.loading)
                 }
             }
 
@@ -265,6 +286,7 @@ private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var pairingStore: PairingFileStore
+
     @State private var showingPairingImporter = false
     @State private var localMessage: String?
 
@@ -278,13 +300,20 @@ private struct SettingsView: View {
                     TextField("Username", text: $model.username)
                         .textInputAutocapitalization(.never)
                     SecureField("Password", text: $model.password)
-                    Button(model.connected ? "Reconnect" : "Connect") { Task { await model.connect() } }
-                        .disabled(model.server.isEmpty || model.username.isEmpty || model.password.isEmpty || model.loading)
+                    Button(model.connected ? "Reconnect" : "Connect") {
+                        Task { await model.connect() }
+                    }
+                    .disabled(model.server.isEmpty || model.username.isEmpty || model.password.isEmpty || model.loading)
                 }
 
                 Section("Device pairing") {
-                    Label(pairingStore.status, systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "checkmark.circle.fill")
-                    Button("Import \(pairingStore.expectedFilename)") { showingPairingImporter = true }
+                    Label(
+                        pairingStore.status,
+                        systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "checkmark.circle.fill"
+                    )
+                    Button("Import \(pairingStore.expectedFilename)") {
+                        showingPairingImporter = true
+                    }
                     if pairingStore.pairingFileURL != nil {
                         Button("Remove pairing file", role: .destructive) {
                             do { try pairingStore.removePairingFile() }
@@ -295,7 +324,7 @@ private struct SettingsView: View {
 
                 Section("Background sync") {
                     Label("Manual sync can continue after locking the screen on iOS 26+.", systemImage: "moon.stars.fill")
-                    Text("For nightly updates, create a Personal Automation in Shortcuts and run “Sync NaviTune Library”. The action imports one protected batch per background run and resumes automatically next time if more remain.")
+                    Text("For nightly updates, create a Personal Automation in Shortcuts and run “Sync NaviTune Library”. Existing Music tracks are skipped automatically; only missing Navidrome tracks are imported.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -308,16 +337,31 @@ private struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .fileImporter(isPresented: $showingPairingImporter, allowedContentTypes: [.propertyList, .data], allowsMultipleSelection: false) { result in
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .fileImporter(
+                isPresented: $showingPairingImporter,
+                allowedContentTypes: [.propertyList, .data],
+                allowsMultipleSelection: false
+            ) { result in
                 do {
                     guard let url = try result.get().first else { return }
                     try pairingStore.importPairingFile(from: url)
-                } catch { localMessage = error.localizedDescription }
+                } catch {
+                    localMessage = error.localizedDescription
+                }
             }
-            .alert("NaviTune", isPresented: Binding(get: { localMessage != nil }, set: { if !$0 { localMessage = nil } })) {
+            .alert("NaviTune", isPresented: Binding(
+                get: { localMessage != nil },
+                set: { if !$0 { localMessage = nil } }
+            )) {
                 Button("OK", role: .cancel) { localMessage = nil }
-            } message: { Text(localMessage ?? "") }
+            } message: {
+                Text(localMessage ?? "")
+            }
         }
     }
 }
@@ -326,6 +370,7 @@ private struct MaintenanceView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var pairingStore: PairingFileStore
+
     @State private var localMessage: String?
     @State private var confirmCleanup = false
 
@@ -336,19 +381,30 @@ private struct MaintenanceView: View {
                     if let pairingURL = pairingStore.pairingFileURL {
                         Button("Test device connection") {
                             do {
-                                try DeviceBridge().testConnection(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
+                                try DeviceBridge().testConnection(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
                                 localMessage = "Device heartbeat connected successfully."
                             } catch { localMessage = error.localizedDescription }
                         }
+
                         Button("Inspect Music library") {
                             do {
-                                let result = try DeviceBridge().inspectSystemMusicLibrary(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
+                                let result = try DeviceBridge().inspectSystemMusicLibrary(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
                                 localMessage = result.summary
                             } catch { localMessage = error.localizedDescription }
                         }
+
                         Button("Validate Music database") {
                             do {
-                                let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
+                                let snapshot = try DeviceBridge().stageSystemMusicDatabase(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
                                 defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
                                 let report = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
                                 localMessage = report.summary
@@ -362,18 +418,27 @@ private struct MaintenanceView: View {
 
                 Section("Library maintenance") {
                     if let pairingURL = pairingStore.pairingFileURL {
-                        Button("Clean duplicates & ghost tracks") { confirmCleanup = true }
-                            .disabled(model.loading)
-                            .confirmationDialog("Clean NaviTune duplicates?", isPresented: $confirmCleanup, titleVisibility: .visible) {
-                                Button("Clean duplicates", role: .destructive) {
-                                    Task {
-                                        await model.cleanDuplicateAndGhostTracks(pairingFileURL: pairingURL, requiresRemotePairing: pairingStore.requiresRPPairingFile)
-                                    }
+                        Button("Clean duplicates & ghost tracks") {
+                            confirmCleanup = true
+                        }
+                        .disabled(model.loading)
+                        .confirmationDialog(
+                            "Clean NaviTune duplicates?",
+                            isPresented: $confirmCleanup,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Clean duplicates", role: .destructive) {
+                                Task {
+                                    await model.cleanDuplicateAndGhostTracks(
+                                        pairingFileURL: pairingURL,
+                                        requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                    )
                                 }
-                                Button("Cancel", role: .cancel) { }
-                            } message: {
-                                Text("A rollback database is created before replacement. Music should be closed during this operation.")
                             }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("A rollback database is created before replacement. Music should be closed during this operation.")
+                        }
                     }
                 }
 
@@ -390,10 +455,19 @@ private struct MaintenanceView: View {
             }
             .navigationTitle("Maintenance")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .alert("NaviTune", isPresented: Binding(get: { localMessage != nil }, set: { if !$0 { localMessage = nil } })) {
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("NaviTune", isPresented: Binding(
+                get: { localMessage != nil },
+                set: { if !$0 { localMessage = nil } }
+            )) {
                 Button("OK", role: .cancel) { localMessage = nil }
-            } message: { Text(localMessage ?? "") }
+            } message: {
+                Text(localMessage ?? "")
+            }
         }
     }
 }
@@ -404,13 +478,26 @@ private struct ActivityCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                if model.loading { ProgressView().controlSize(.small) }
-                else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
-                Text("Activity").font(.headline)
+                if model.loading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                Text("Activity")
+                    .font(.headline)
                 Spacer()
-                if !model.loading { Button("Clear") { model.clearActivityLog() }.font(.caption.weight(.semibold)) }
+                if !model.loading {
+                    Button("Clear") { model.clearActivityLog() }
+                        .font(.caption.weight(.semibold))
+                }
             }
-            if let progress = model.activityProgress { ProgressView(value: progress) }
+
+            if let progress = model.activityProgress {
+                ProgressView(value: progress)
+            }
+
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(model.activityLog.suffix(12).enumerated()), id: \.offset) { _, line in
@@ -454,10 +541,15 @@ private struct MetricCard: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: symbol).font(.title3)
+            Image(systemName: symbol)
+                .font(.title3)
             VStack(alignment: .leading, spacing: 1) {
-                Text(value).font(.title3.bold()).monospacedDigit()
-                Text(label).font(.caption2).foregroundStyle(.secondary)
+                Text(value)
+                    .font(.title3.bold())
+                    .monospacedDigit()
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -475,7 +567,8 @@ private struct AlbumView: View {
     var body: some View {
         List(songs) { song in
             VStack(alignment: .leading, spacing: 3) {
-                Text(song.title).font(.body.weight(.medium))
+                Text(song.title)
+                    .font(.body.weight(.medium))
                 HStack(spacing: 6) {
                     Text(song.artist ?? "Unknown artist")
                     if let genre = song.genre, !genre.isEmpty {
