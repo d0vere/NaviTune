@@ -95,6 +95,62 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Destructive device write path. The original DB is saved locally before
+    /// network writes and a second rollback copy is retained on the device.
+    func commitInjection(
+        _ song: Song,
+        pairingFileURL: URL,
+        requiresRemotePairing: Bool
+    ) async {
+        guard let client else { return }
+        loading = true
+        defer { loading = false }
+
+        do {
+            let localFile = try await client.download(song)
+            let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
+
+            // 1. Snapshot the live database before any write.
+            let snapshot = try DeviceBridge().stageSystemMusicDatabase(
+                pairingFileURL: pairingFileURL,
+                requiresRemotePairing: requiresRemotePairing
+            )
+            defer { try? FileManager.default.removeItem(at: snapshot.directoryURL) }
+
+            // 2. Persist a user-recoverable local backup in Documents.
+            let backupURL = try persistLocalDatabaseBackup(from: snapshot.databaseURL)
+
+            // 3. Create and validate the local working copy.
+            let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
+            let mutation = try LocalMusicDatabaseBuilder().addSingleTrack(metadata, to: stage.databaseURL)
+
+            // 4. Commit with remote temp files + remote rollback DB.
+            let result = try DeviceWriteBackService().commit(
+                metadata: metadata,
+                modifiedDatabaseURL: mutation.databaseURL,
+                pairingFileURL: pairingFileURL,
+                requiresRemotePairing: requiresRemotePairing
+            )
+
+            message = "\(result.summary) Local backup: \(backupURL.lastPathComponent). Close and reopen Music before checking the new track."
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func persistLocalDatabaseBackup(from sourceURL: URL) throws -> URL {
+        let fm = FileManager.default
+        let directory = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MusicLibraryBackups", isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let destination = directory.appendingPathComponent("MediaLibrary-\(formatter.string(from: Date())).sqlitedb")
+        try fm.copyItem(at: sourceURL, to: destination)
+        return destination
+    }
+
     func albumSongs(_ album: Album) async -> [Song] {
         guard let client else { return [] }
         do { return try await client.songs(in: album.id) }
