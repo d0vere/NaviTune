@@ -14,14 +14,12 @@ struct InjectionArtwork {
 
     /// ByeTunes' iOS 26.4+ local artwork path is derived from the item PID:
     /// token = decimal item PID, relative path = SHA1(token) split 2/rest.
-    /// The uploaded JPEG bytes intentionally use an extensionless path.
     static func make(from rawData: Data, itemPID: Int64) -> InjectionArtwork? {
         guard let image = UIImage(data: rawData), let jpeg = image.jpegData(compressionQuality: 0.94) else { return nil }
         let token = String(itemPID)
         let digest = Insecure.SHA1.hash(data: Data(token.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
-        let relativePath = "\(hex.prefix(2))/\(hex.dropFirst(2))"
-        return InjectionArtwork(data: jpeg, token: token, relativePath: relativePath)
+        return InjectionArtwork(data: jpeg, token: token, relativePath: "\(hex.prefix(2))/\(hex.dropFirst(2))")
     }
 }
 
@@ -33,7 +31,7 @@ enum MusicArtworkDatabaseError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .openFailed: return "Could not open the Music database for artwork metadata."
-        case .unsupportedSchema: return "This Music database does not expose the iOS 26 artwork tables required for local album covers."
+        case .unsupportedSchema: return "This Music database does not expose the artwork tables required for local album covers."
         case .sqlFailed(let detail): return "Artwork database update failed: \(detail)"
         }
     }
@@ -41,14 +39,14 @@ enum MusicArtworkDatabaseError: LocalizedError {
 
 final class MusicArtworkDatabaseWriter {
     func attachAlbumArtwork(databaseURL: URL, itemPID: Int64, artwork: InjectionArtwork) throws {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(databaseURL.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let db else {
-            if db != nil { sqlite3_close(db) }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let db = handle else {
+            if handle != nil { sqlite3_close(handle) }
             throw MusicArtworkDatabaseError.openFailed
         }
         defer { sqlite3_close(db) }
 
-        guard try tableExists(db, "artwork"), try tableExists(db, "artwork_token") else {
+        guard try tableExists(db, "artwork"), try tableExists(db, "artwork_token"), try tableExists(db, "best_artwork_token") else {
             throw MusicArtworkDatabaseError.unsupportedSchema
         }
         guard let albumPID = try scalarInt64(db, "SELECT album_pid FROM item WHERE item_pid = \(itemPID) LIMIT 1") else {
@@ -73,7 +71,7 @@ final class MusicArtworkDatabaseWriter {
             if tokenColumns.contains("gradient_size_end") { tokenValues["gradient_size_end"] = .double(-1) }
             try insertDynamic(db, table: "artwork_token", replace: true, values: tokenValues)
 
-            let artColumns = try tableColumns(db, "artwork")
+            let artworkColumns = try tableColumns(db, "artwork")
             var artworkValues: [String: SQLValue] = [
                 "artwork_token": .text(artwork.token),
                 "artwork_source_type": .int(300),
@@ -81,10 +79,22 @@ final class MusicArtworkDatabaseWriter {
                 "artwork_type": .int(6),
                 "artwork_variant_type": .int(0)
             ]
-            // ByeTunes uses a non-null text value for the local artwork source
-            // on iOS 26.4+, even when no color analysis is available.
-            if artColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
+            if artworkColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
             try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
+
+            // This table is what Music consults to choose the artwork token for
+            // an album. Without it, artwork/artwork_token can exist correctly
+            // while the UI still renders no cover. ByeTunes writes the same
+            // album linkage for iOS 26.4+ local artwork.
+            try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
+                "entity_pid": .int(albumPID),
+                "entity_type": .int(4),
+                "artwork_type": .int(6),
+                "available_artwork_token": .text(artwork.token),
+                "fetchable_artwork_token": .text(""),
+                "fetchable_artwork_source_type": .int(0),
+                "artwork_variant_type": .int(0)
+            ])
 
             try exec(db, "COMMIT")
         } catch {
