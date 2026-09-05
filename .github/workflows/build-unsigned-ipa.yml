@@ -1,4 +1,4 @@
-name: Build unsigned iOS IPA
+name: Build NaviTune unsigned IPA
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: navidrome-music-sync-${{ github.ref }}
+  group: navitune-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build unsigned iOS IPA
+    name: Build NaviTune unsigned IPA
     runs-on: macos-26
     timeout-minutes: 45
 
@@ -57,7 +57,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -project NavidromeMusicSync.xcodeproj \
+            -project NaviTune.xcodeproj \
             -scheme NavidromeMusicSync \
             -configuration Release \
             -sdk iphoneos \
@@ -70,7 +70,7 @@ jobs:
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/NavidromeMusicSync.app"
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/NaviTune.app"
           test -d "$APP"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
@@ -92,8 +92,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release delete navi-test-latest --cleanup-tag -y || true
-          gh release create navi-test-latest \
+          gh release delete navitune-latest --cleanup-tag -y || true
+          gh release create navitune-latest \
             NaviTune-unsigned.ipa \
             --target "$GITHUB_SHA" \
             --title "Latest NaviTune test IPA" \
