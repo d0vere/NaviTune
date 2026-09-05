@@ -1,0 +1,29 @@
+name: NavidromeMusicSync
+options:
+  bundleIdPrefix: com.d0vere
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  NavidromeMusicSync:
+    type: application
+    platform: iOS
+    sources:
+      - path: NavidromeMusicSync
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.d0vere.NavidromeMusicSync
+        PRODUCT_NAME: NavidromeMusicSync
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Navi Music Sync
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
