@@ -27,3 +27,11 @@ targets:
         SUPPORTS_MACCATALYST: NO
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
+        SWIFT_OBJC_BRIDGING_HEADER: NavidromeMusicSync/BridgingHeader.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/idevice"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/idevice"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lidevice_ffi"
