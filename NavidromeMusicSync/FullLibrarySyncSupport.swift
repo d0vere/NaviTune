@@ -29,8 +29,20 @@ enum NaviLibraryIndex {
         }
         defer { sqlite3_close(db) }
 
+        // Music may leave item_extra rows behind after a user removes a track.
+        // A location therefore only counts as synchronized when the owning item
+        // is still an active member of the Music library and is not disabled.
+        let sql = """
+        SELECT ie.location
+        FROM item_extra AS ie
+        INNER JOIN item AS i ON i.item_pid = ie.item_pid
+        WHERE ie.location IS NOT NULL
+          AND COALESCE(i.in_my_library, 0) = 1
+          AND COALESCE(ie.is_user_disabled, 0) = 0
+        """
+
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT location FROM item_extra WHERE location IS NOT NULL", -1, &statement, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
               let statement else {
             throw FullLibrarySyncSupportError.databaseOpenFailed
         }
