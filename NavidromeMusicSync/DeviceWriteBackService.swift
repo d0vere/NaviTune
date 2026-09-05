@@ -3,9 +3,10 @@ import Darwin
 
 enum DeviceWriteBackError: LocalizedError {
     case pairingFileMissing
-    case remotePairingRequired
     case pairingReadFailed
     case providerCreationFailed
+    case rpPairingReadFailed
+    case rpTunnelFailed
     case afcConnectionFailed
     case localFileReadFailed(String)
     case remoteDirectoryFailed(String)
@@ -20,10 +21,11 @@ enum DeviceWriteBackError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .pairingFileMissing: return "Import the pairing file first."
-        case .remotePairingRequired: return "RP pairing write-back is not enabled yet on iOS 26.4+."
-        case .pairingReadFailed: return "Could not read the pairing record."
-        case .providerCreationFailed: return "Could not open the local lockdown provider."
-        case .afcConnectionFailed: return "Could not connect to AFC."
+        case .pairingReadFailed: return "Could not read the classic pairing record."
+        case .providerCreationFailed: return "Could not open the classic lockdown provider."
+        case .rpPairingReadFailed: return "Could not read rpPairingFile.plist. Re-export it and import it again."
+        case .rpTunnelFailed: return "Could not establish the RP/RSD tunnel to 10.7.0.1:49152. Make sure LocalDevVPN/local tunnel is active and the RP pairing file matches this iPhone."
+        case .afcConnectionFailed: return "Could not connect to AFC over the active device transport."
         case .localFileReadFailed(let name): return "Could not read local file: \(name)."
         case .remoteDirectoryFailed(let path): return "Could not prepare remote directory: \(path)."
         case .remoteOpenFailed(let path): return "Could not open remote file for writing: \(path)."
@@ -60,6 +62,8 @@ struct DeviceWriteBackResult {
 /// If step 5 fails, the original DB is renamed back automatically.
 final class DeviceWriteBackService {
     private static let deviceHost = "10.7.0.1"
+    private static let remotePairingPort: UInt16 = 49152
+    private static let hostName = "NavidromeMusicSync"
     private static let musicDirectory = "/iTunes_Control/Music/F00"
     private static let databasePath = "/iTunes_Control/iTunes/MediaLibrary.sqlitedb"
     private static let databaseTempPath = "/iTunes_Control/iTunes/MediaLibrary.sqlitedb.navsync-new"
@@ -88,14 +92,12 @@ final class DeviceWriteBackService {
             let finalAudioPath = "\(Self.musicDirectory)/\(metadata.remoteFilename)"
             let temporaryAudioPath = "\(finalAudioPath).navsync-new"
 
-            // Clean stale temporary files from an interrupted previous attempt.
             _ = temporaryAudioPath.withCString { afc_remove_path(afc, $0) }
             _ = Self.databaseTempPath.withCString { afc_remove_path(afc, $0) }
 
             try write(data: audioData, to: temporaryAudioPath, afc: afc)
             try verifyRemoteSize(path: temporaryAudioPath, expected: audioData.count, afc: afc)
 
-            // Replace only this deterministic Navidrome-owned filename.
             _ = finalAudioPath.withCString { afc_remove_path(afc, $0) }
             guard rename(source: temporaryAudioPath, destination: finalAudioPath, afc: afc) else {
                 _ = temporaryAudioPath.withCString { afc_remove_path(afc, $0) }
@@ -110,8 +112,6 @@ final class DeviceWriteBackService {
                 throw error
             }
 
-            // Keep one remote rollback copy. It is intentionally not deleted
-            // after a successful commit.
             _ = Self.databaseBackupPath.withCString { afc_remove_path(afc, $0) }
             guard rename(source: Self.databasePath, destination: Self.databaseBackupPath, afc: afc) else {
                 _ = Self.databaseTempPath.withCString { afc_remove_path(afc, $0) }
@@ -127,8 +127,6 @@ final class DeviceWriteBackService {
                 throw DeviceWriteBackError.databaseCommitFailed
             }
 
-            // A checkpointed local database is being installed; stale sidecars
-            // from the previous live database must not be replayed over it.
             let wal = Self.databasePath + "-wal"
             let shm = Self.databasePath + "-shm"
             _ = wal.withCString { afc_remove_path(afc, $0) }
@@ -178,8 +176,21 @@ final class DeviceWriteBackService {
         requiresRemotePairing: Bool,
         _ body: (AfcClientHandle) throws -> T
     ) throws -> T {
-        guard FileManager.default.fileExists(atPath: pairingFileURL.path) else { throw DeviceWriteBackError.pairingFileMissing }
-        if requiresRemotePairing { throw DeviceWriteBackError.remotePairingRequired }
+        guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
+            throw DeviceWriteBackError.pairingFileMissing
+        }
+
+        if requiresRemotePairing {
+            return try withRPTransport(pairingFileURL: pairingFileURL) { adapter, handshake in
+                var afc: AfcClientHandle?
+                let afcError = afc_client_connect_rsd(adapter, handshake, &afc)
+                guard afcError == nil, let afc else {
+                    throw DeviceWriteBackError.afcConnectionFailed
+                }
+                defer { afc_client_free(afc) }
+                return try body(afc)
+            }
+        }
 
         var pairing: IdevicePairingFileHandle?
         let pairingError = idevice_pairing_file_read(pairingFileURL.path, &pairing)
@@ -195,7 +206,7 @@ final class DeviceWriteBackService {
         var provider: IdeviceProviderHandle?
         let providerError = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
-                idevice_tcp_provider_new(socketAddress, pairing, "NavidromeMusicSync", &provider)
+                idevice_tcp_provider_new(socketAddress, pairing, Self.hostName, &provider)
             }
         }
         guard providerError == nil, let provider else { throw DeviceWriteBackError.providerCreationFailed }
@@ -207,5 +218,63 @@ final class DeviceWriteBackService {
         defer { afc_client_free(afc) }
 
         return try body(afc)
+    }
+
+    private func withRPTransport<T>(
+        pairingFileURL: URL,
+        _ body: (AdapterHandle, RsdHandshakeHandle) throws -> T
+    ) throws -> T {
+        var pairing: RpPairingFileHandle?
+        let pairingError = rp_pairing_file_read(pairingFileURL.path, &pairing)
+        guard pairingError == nil, let pairing else {
+            throw DeviceWriteBackError.rpPairingReadFailed
+        }
+        defer { rp_pairing_file_free(pairing) }
+
+        var addr = sockaddr_in()
+        memset(&addr, 0, MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = CFSwapInt16HostToBig(Self.remotePairingPort)
+        guard inet_pton(AF_INET, Self.deviceHost, &addr.sin_addr) == 1 else {
+            throw DeviceWriteBackError.rpTunnelFailed
+        }
+
+        var adapter: AdapterHandle?
+        var handshake: RsdHandshakeHandle?
+        let tunnelError = Self.hostName.withCString { hostname in
+            withUnsafePointer(to: &addr) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                    tunnel_create_rppairing(
+                        socketAddress,
+                        socklen_t(MemoryLayout<sockaddr_in>.size),
+                        hostname,
+                        pairing,
+                        nil,
+                        nil,
+                        &adapter,
+                        &handshake
+                    )
+                }
+            }
+        }
+
+        guard tunnelError == nil, let adapter, let handshake else {
+            if let handshake { rsd_handshake_free(handshake) }
+            if let adapter {
+                _ = adapter_close(adapter)
+                adapter_free(adapter)
+            }
+            throw DeviceWriteBackError.rpTunnelFailed
+        }
+
+        _ = rp_pairing_file_write(pairing, pairingFileURL.path)
+
+        defer {
+            rsd_handshake_free(handshake)
+            _ = adapter_close(adapter)
+            adapter_free(adapter)
+        }
+
+        return try body(adapter, handshake)
     }
 }
