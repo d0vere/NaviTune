@@ -12,14 +12,25 @@ struct InjectionArtwork {
         "/iTunes_Control/iTunes/Artwork/Originals/\(relativePath)"
     }
 
-    /// ByeTunes' iOS 26.4+ local artwork path is derived from the item PID:
-    /// token = decimal item PID, relative path = SHA1(token) split 2/rest.
+    /// ByeTunes' iOS 26.4+ local artwork path is derived from the artwork token:
+    /// relative path = SHA1(token) split 2/rest.
     static func make(from rawData: Data, itemPID: Int64) -> InjectionArtwork? {
+        make(from: rawData, token: String(itemPID))
+    }
+
+    static func make(from rawData: Data, token: String) -> InjectionArtwork? {
         guard let image = UIImage(data: rawData), let jpeg = image.jpegData(compressionQuality: 0.94) else { return nil }
-        let token = String(itemPID)
         let digest = Insecure.SHA1.hash(data: Data(token.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         return InjectionArtwork(data: jpeg, token: token, relativePath: "\(hex.prefix(2))/\(hex.dropFirst(2))")
+    }
+
+    static func stableArtistToken(artistID: String) -> String {
+        let digest = SHA256.hash(data: Data(artistID.utf8))
+        var value: UInt64 = 0
+        for byte in digest.prefix(8) { value = (value << 8) | UInt64(byte) }
+        value &= 0x7FFF_FFFF_FFFF_FFFF
+        return String(max(value, 1))
     }
 }
 
@@ -53,21 +64,23 @@ final class MusicArtworkDatabaseWriter {
             throw MusicArtworkDatabaseError.unsupportedSchema
         }
 
+        let artistPID = try scalarInt64(db, "SELECT item_artist_pid FROM item WHERE item_pid = \(itemPID) LIMIT 1")
+        let remoteFilename = try scalarText(db, "SELECT location FROM item_extra WHERE item_pid = \(itemPID) LIMIT 1")
+
         try exec(db, "BEGIN IMMEDIATE")
         do {
-            // iOS 26.4+ local album artwork. This path is already validated on-device.
-            try writeAlbumArtworkLink(
+            // iOS 26.4+ local album artwork. This path is validated on-device.
+            try writeArtworkLink(
                 db,
-                albumPID: albumPID,
+                entityPID: albumPID,
+                entityType: 4,
+                artworkType: 6,
+                sourceType: 300,
                 token: artwork.token,
                 relativePath: artwork.relativePath
             )
 
-            // ByeTunes does NOT use entity_type=1/artwork_type=5 when inserting a
-            // playable Music item. Its actual best-artwork mapping for a track is
-            // entity_type=0, artwork_type=1, with the SAME artToken used by the
-            // uploaded local artwork. Pointing directly at the existing album JPEG
-            // avoids a second file while allowing song rows/Now Playing to resolve it.
+            // Track rows / Now Playing use ByeTunes' item mapping.
             try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
                 "entity_pid": .int(itemPID),
                 "entity_type": .int(0),
@@ -78,6 +91,29 @@ final class MusicArtworkDatabaseWriter {
                 "artwork_variant_type": .int(0)
             ])
 
+            // Use Navidrome's actual artist artwork when the Subsonic song carries
+            // an artistId. ByeTunes maps artist artwork as entity_type=2/type=1,
+            // with artwork source 1. Failure is intentionally non-fatal.
+            if let artistPID,
+               let remoteFilename,
+               let artistID = InjectionMetadataRegistry.takeArtistID(for: remoteFilename),
+               let rawArtistArtwork = NavidromeArtistArtworkFetcher.fetch(artistID: artistID),
+               let artistArtwork = InjectionArtwork.make(
+                    from: rawArtistArtwork,
+                    token: InjectionArtwork.stableArtistToken(artistID: artistID)
+               ) {
+                try writeArtworkLink(
+                    db,
+                    entityPID: artistPID,
+                    entityType: 2,
+                    artworkType: 1,
+                    sourceType: 1,
+                    token: artistArtwork.token,
+                    relativePath: artistArtwork.relativePath
+                )
+                InjectionMetadataRegistry.setPendingArtistArtwork(artistArtwork, forAlbumToken: artwork.token)
+            }
+
             try exec(db, "COMMIT")
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
@@ -85,19 +121,22 @@ final class MusicArtworkDatabaseWriter {
         }
     }
 
-    private func writeAlbumArtworkLink(
+    private func writeArtworkLink(
         _ db: OpaquePointer,
-        albumPID: Int64,
+        entityPID: Int64,
+        entityType: Int64,
+        artworkType: Int64,
+        sourceType: Int64,
         token: String,
         relativePath: String
     ) throws {
         let tokenColumns = try tableColumns(db, "artwork_token")
         var tokenValues: [String: SQLValue] = [
             "artwork_token": .text(token),
-            "artwork_source_type": .int(300),
-            "artwork_type": .int(6),
-            "entity_pid": .int(albumPID),
-            "entity_type": .int(4),
+            "artwork_source_type": .int(sourceType),
+            "artwork_type": .int(artworkType),
+            "entity_pid": .int(entityPID),
+            "entity_type": .int(entityType),
             "artwork_variant_type": .int(0)
         ]
         for name in ["primary_text_color", "secondary_text_color", "tertiary_text_color", "quaternary_text_color", "background_color", "gradient_text_color", "gradient_color"] where tokenColumns.contains(name) {
@@ -110,18 +149,18 @@ final class MusicArtworkDatabaseWriter {
         let artworkColumns = try tableColumns(db, "artwork")
         var artworkValues: [String: SQLValue] = [
             "artwork_token": .text(token),
-            "artwork_source_type": .int(300),
+            "artwork_source_type": .int(sourceType),
             "relative_path": .text(relativePath),
-            "artwork_type": .int(6),
+            "artwork_type": .int(artworkType),
             "artwork_variant_type": .int(0)
         ]
         if artworkColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
         try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
 
         try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
-            "entity_pid": .int(albumPID),
-            "entity_type": .int(4),
-            "artwork_type": .int(6),
+            "entity_pid": .int(entityPID),
+            "entity_type": .int(entityType),
+            "artwork_type": .int(artworkType),
             "available_artwork_token": .text(token),
             "fetchable_artwork_token": .text(""),
             "fetchable_artwork_source_type": .int(0),
@@ -175,6 +214,14 @@ final class MusicArtworkDatabaseWriter {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         return sqlite3_column_int64(statement, 0)
+    }
+
+    private func scalarText(_ db: OpaquePointer, _ sql: String) throws -> String? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else { return nil }
+        return String(cString: text)
     }
 
     private func exec(_ db: OpaquePointer, _ sql: String) throws {
