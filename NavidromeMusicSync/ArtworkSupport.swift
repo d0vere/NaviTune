@@ -12,15 +12,16 @@ struct InjectionArtwork {
         "/iTunes_Control/iTunes/Artwork/Originals/\(relativePath)"
     }
 
-    static func make(from rawData: Data, navidromeCoverID: String) -> InjectionArtwork? {
+    /// ByeTunes' iOS 26.4+ local artwork path is derived from the item PID:
+    /// token = decimal item PID, relative path = SHA1(token) split 2/rest.
+    /// The uploaded JPEG bytes intentionally use an extensionless path.
+    static func make(from rawData: Data, itemPID: Int64) -> InjectionArtwork? {
         guard let image = UIImage(data: rawData), let jpeg = image.jpegData(compressionQuality: 0.94) else { return nil }
-        let digest = SHA256.hash(data: jpeg)
+        let token = String(itemPID)
+        let digest = Insecure.SHA1.hash(data: Data(token.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
-        let folder = String(hex.prefix(2))
-        let filename = String(hex.dropFirst(2).prefix(30)) + ".jpg"
-        let tokenDigest = SHA256.hash(data: Data((navidromeCoverID + hex).utf8))
-        let token = tokenDigest.prefix(12).map { String(format: "%02x", $0) }.joined()
-        return InjectionArtwork(data: jpeg, token: token, relativePath: "\(folder)/\(filename)")
+        let relativePath = "\(hex.prefix(2))/\(hex.dropFirst(2))"
+        return InjectionArtwork(data: jpeg, token: token, relativePath: relativePath)
     }
 }
 
@@ -72,6 +73,7 @@ final class MusicArtworkDatabaseWriter {
             if tokenColumns.contains("gradient_size_end") { tokenValues["gradient_size_end"] = .double(-1) }
             try insertDynamic(db, table: "artwork_token", replace: true, values: tokenValues)
 
+            let artColumns = try tableColumns(db, "artwork")
             var artworkValues: [String: SQLValue] = [
                 "artwork_token": .text(artwork.token),
                 "artwork_source_type": .int(300),
@@ -79,7 +81,8 @@ final class MusicArtworkDatabaseWriter {
                 "artwork_type": .int(6),
                 "artwork_variant_type": .int(0)
             ]
-            let artColumns = try tableColumns(db, "artwork")
+            // ByeTunes uses a non-null text value for the local artwork source
+            // on iOS 26.4+, even when no color analysis is available.
             if artColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
             try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
 
