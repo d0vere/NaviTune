@@ -7,8 +7,12 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: navidrome-music-sync-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -73,13 +77,27 @@ jobs:
           /usr/bin/zip -qry "$GITHUB_WORKSPACE/NavidromeMusicSync-unsigned.ipa" Payload
           /usr/bin/unzip -l "$GITHUB_WORKSPACE/NavidromeMusicSync-unsigned.ipa" | head -40
 
-      - name: Upload unsigned IPA
+      - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: NavidromeMusicSync-unsigned
           path: NavidromeMusicSync-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish direct latest IPA download
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete navi-test-latest --cleanup-tag -y || true
+          gh release create navi-test-latest \
+            NavidromeMusicSync-unsigned.ipa \
+            --target "$GITHUB_SHA" \
+            --title "Latest Navi Music Sync test IPA" \
+            --notes "Automated unsigned test build from commit $GITHUB_SHA. Download the .ipa asset directly for SideStore." \
+            --prerelease
 
       - name: Upload idevice FFI diagnostics
         uses: actions/upload-artifact@v4
