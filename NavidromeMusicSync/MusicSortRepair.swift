@@ -15,13 +15,18 @@ enum MusicSortRepairError: LocalizedError {
 
 /// Rebuilds sort_map ordering and propagates the new numeric order values into
 /// item/item_search/album_artist. The visible title in item_extra can be fully
-/// correct while Music still sorts by stale title_order values; this fixes the
-/// indexing layer without changing song titles or audio records.
+/// correct while Music still sorts by stale title_order values.
+///
+/// IMPORTANT: sort_map.name_order is UNIQUE on current Music schemas. Updating
+/// rows directly from old -> new order can collide mid-statement. The repair
+/// therefore moves every name_order into a temporary high range first, then
+/// applies the final dense ordering. This makes the operation idempotent and
+/// safe even after a previous failed import.
 final class MusicSortRepair {
     func repair(databaseURL: URL) throws {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(databaseURL.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let db else {
-            if db != nil { sqlite3_close(db) }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let db = handle else {
+            if handle != nil { sqlite3_close(handle) }
             throw MusicSortRepairError.openFailed
         }
         defer { sqlite3_close(db) }
@@ -53,9 +58,10 @@ final class MusicSortRepair {
                    name_section,
                    ROW_NUMBER() OVER (
                        ORDER BY
-                           CASE name_section WHEN 26 THEN -1 ELSE name_section END ASC,
+                           CASE name_section WHEN 26 THEN 999 ELSE name_section END ASC,
                            sort_key COLLATE NOCASE ASC,
-                           name COLLATE NOCASE ASC
+                           name COLLATE NOCASE ASC,
+                           name_order ASC
                    ) AS new_order
             FROM sort_map
             """)
@@ -96,16 +102,33 @@ final class MusicSortRepair {
                 }
             }
 
+            // Avoid UNIQUE(name_order) collisions by first moving all rows to a
+            // disjoint high range, then assigning the final compact order.
+            let maxOrder = try scalarInt64(db, "SELECT COALESCE(MAX(name_order), 0) FROM sort_map")
+            let count = try scalarInt64(db, "SELECT COUNT(*) FROM sort_map")
+            let offset = maxOrder + count + 10000
+            try exec(db, "UPDATE sort_map SET name_order = name_order + \(offset)")
             try exec(db, """
-            UPDATE sort_map SET
-                name_order = COALESCE((SELECT new_order FROM _sort_reorder WHERE old_order = sort_map.name_order), name_order)
+            UPDATE sort_map SET name_order = COALESCE(
+                (SELECT new_order FROM _sort_reorder WHERE old_order = sort_map.name_order - \(offset)),
+                sort_map.name_order - \(offset)
+            )
             """)
+
             try exec(db, "DROP TABLE IF EXISTS _sort_reorder")
             try exec(db, "COMMIT")
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error
         }
+    }
+
+    private func scalarInt64(_ db: OpaquePointer, _ sql: String) throws -> Int64 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw sqlError(db) }
+        return sqlite3_column_int64(statement, 0)
     }
 
     private func tableExists(_ db: OpaquePointer, _ table: String) throws -> Bool {
