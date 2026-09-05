@@ -4,19 +4,18 @@ import SQLite3
 enum MusicRecordPostProcessorError: LocalizedError {
     case openFailed
     case sqlFailed(String)
-    case integrityFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .openFailed: return "Could not open the Music database for final record cleanup."
         case .sqlFailed(let detail): return "Music record cleanup failed: \(detail)"
-        case .integrityFailed(let result): return "Music database failed quick_check after cleanup: \(result)"
         }
     }
 }
 
-/// Finalizes a locally inserted track for iOS 26 and removes older records that
-/// point at the same deterministic Navidrome-owned file.
+/// Lightweight finalization for a locally inserted track.
+/// The main builder already checkpoints and quick-checks the database, so this
+/// pass only performs targeted row updates/de-duplication in one transaction.
 final class MusicRecordPostProcessor {
     func finalize(databaseURL: URL, currentItemPID: Int64, remoteFilename: String) throws {
         var db: OpaquePointer?
@@ -37,9 +36,6 @@ final class MusicRecordPostProcessor {
                 }
             }
 
-            // Ensure this is treated strictly as a local synced asset, not an
-            // Apple catalog/subscription item. Only touch columns present on the
-            // device's schema.
             if try tableExists(db, "item_store") {
                 let values: [String: Int64] = [
                     "sync_in_my_library": 1,
@@ -67,10 +63,8 @@ final class MusicRecordPostProcessor {
                 }
             }
 
-            // ByeTunes creates item_video even for normal audio on modern iOS.
             if try tableExists(db, "item_video") {
-                let hasTraits = try columnExists(db, table: "item_video", column: "hls_asset_traits")
-                if hasTraits {
+                if try columnExists(db, table: "item_video", column: "hls_asset_traits") {
                     try exec(db, "INSERT OR REPLACE INTO item_video (item_pid, hls_asset_traits) VALUES (\(currentItemPID), 0)")
                 } else {
                     try exec(db, "INSERT OR REPLACE INTO item_video (item_pid) VALUES (\(currentItemPID))")
@@ -78,11 +72,6 @@ final class MusicRecordPostProcessor {
             }
 
             try exec(db, "COMMIT")
-            _ = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
-            _ = sqlite3_exec(db, "PRAGMA journal_mode=DELETE", nil, nil, nil)
-
-            let check = try scalarText(db, "PRAGMA quick_check") ?? "unknown"
-            guard check == "ok" else { throw MusicRecordPostProcessorError.integrityFailed(check) }
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             throw error
@@ -121,14 +110,6 @@ final class MusicRecordPostProcessor {
             if let name = sqlite3_column_text(statement, 1), String(cString: name) == column { return true }
         }
         return false
-    }
-
-    private func scalarText(_ db: OpaquePointer, _ sql: String) throws -> String? {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW, let value = sqlite3_column_text(statement, 0) else { return nil }
-        return String(cString: value)
     }
 
     private func exec(_ db: OpaquePointer, _ sql: String) throws {
