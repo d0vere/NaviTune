@@ -24,12 +24,16 @@ final class AppModel: ObservableObject {
     func connect() async {
         loading = true
         defer { loading = false }
+
+        // Persist what the user typed before the network test. This way the
+        // fields survive an app restart even if Navidrome is temporarily down.
+        NavidromeSettingsStore.save(server: server, username: username, password: password)
+
         do {
             let client = try NavidromeClient(server: server, username: username, password: password)
             try await client.ping()
             self.client = client
             connected = true
-            NavidromeSettingsStore.save(server: server, username: username, password: password)
             async let albums = client.newestAlbums()
             async let starred = client.starredSongs()
             self.albums = try await albums
@@ -82,7 +86,7 @@ final class AppModel: ObservableObject {
         defer { loading = false }
 
         do {
-            let localFile = try await client.download(song)
+            let localFile = try await client.downloadForMusicInjection(song)
             let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
 
             let snapshot = try DeviceBridge().stageSystemMusicDatabase(
@@ -98,7 +102,7 @@ final class AppModel: ObservableObject {
                 currentItemPID: result.itemPID,
                 remoteFilename: result.remoteFilename
             )
-            message = "\(result.summary) iOS 26 local/store flags and duplicate records were normalized."
+            message = "\(result.summary) Injection test used a normalized MP3 asset."
         } catch {
             message = error.localizedDescription
         }
@@ -114,7 +118,7 @@ final class AppModel: ObservableObject {
         defer { loading = false }
 
         do {
-            let localFile = try await client.download(song)
+            let localFile = try await client.downloadForMusicInjection(song)
             let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
 
             let snapshot = try DeviceBridge().stageSystemMusicDatabase(
@@ -140,7 +144,7 @@ final class AppModel: ObservableObject {
                 requiresRemotePairing: requiresRemotePairing
             )
 
-            message = "\(result.summary) Local backup: \(backupURL.lastPathComponent). Existing records for this Navidrome track were replaced, not duplicated. Close and reopen Music before checking it."
+            message = "\(result.summary) Local backup: \(backupURL.lastPathComponent). Injected audio was normalized to MP3 for native Music compatibility. Close and reopen Music before checking it."
         } catch {
             message = error.localizedDescription
         }
