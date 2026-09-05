@@ -1,7 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var pairingStore: PairingFileStore
+    @State private var showingPairingImporter = false
+    @State private var pairingError: String?
 
     var body: some View {
         NavigationStack {
@@ -21,12 +25,32 @@ struct ContentView: View {
                 if model.loading { ProgressView().controlSize(.large) }
             }
             .alert("NavidromeMusicSync", isPresented: Binding(
-                get: { model.message != nil },
-                set: { if !$0 { model.message = nil } }
+                get: { model.message != nil || pairingError != nil },
+                set: {
+                    if !$0 {
+                        model.message = nil
+                        pairingError = nil
+                    }
+                }
             )) {
-                Button("OK", role: .cancel) { model.message = nil }
+                Button("OK", role: .cancel) {
+                    model.message = nil
+                    pairingError = nil
+                }
             } message: {
-                Text(model.message ?? "")
+                Text(pairingError ?? model.message ?? "")
+            }
+            .fileImporter(
+                isPresented: $showingPairingImporter,
+                allowedContentTypes: [.propertyList, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                do {
+                    guard let url = try result.get().first else { return }
+                    try pairingStore.importPairingFile(from: url)
+                } catch {
+                    pairingError = error.localizedDescription
+                }
             }
         }
     }
@@ -41,10 +65,41 @@ struct ContentView: View {
                     .textInputAutocapitalization(.never)
                 SecureField("Password", text: $model.password)
             }
+
+            Section("Device pairing") {
+                HStack {
+                    Label(
+                        pairingStore.status,
+                        systemImage: pairingStore.pairingFileURL == nil ? "iphone.slash" : "iphone.and.arrow.forward"
+                    )
+                    Spacer()
+                    if pairingStore.pairingFileURL != nil {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                Button("Import \(pairingStore.expectedFilename)") {
+                    showingPairingImporter = true
+                }
+
+                if pairingStore.pairingFileURL != nil {
+                    Button("Remove pairing file", role: .destructive) {
+                        do { try pairingStore.removePairingFile() }
+                        catch { pairingError = error.localizedDescription }
+                    }
+                }
+
+                Text("The pairing record is stored only inside this app's Documents container. On iOS 26.4+ the app expects an RP pairing file, matching the transport used by current ByeTunes builds.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Button("Connect") { Task { await model.connect() } }
                     .disabled(model.server.isEmpty || model.username.isEmpty || model.password.isEmpty || model.loading)
             }
+
             Section {
                 Text("Use HTTPS when connecting to a server over the internet.")
                     .font(.footnote)
@@ -55,6 +110,15 @@ struct ContentView: View {
 
     private var library: some View {
         List {
+            Section("Device pairing") {
+                HStack {
+                    Text(pairingStore.status)
+                    Spacer()
+                    Button("Import") { showingPairingImporter = true }
+                        .buttonStyle(.borderless)
+                }
+            }
+
             if !model.starred.isEmpty {
                 Section("Starred") {
                     ForEach(model.starred.prefix(20)) { song in
