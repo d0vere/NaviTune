@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var showingPairingImporter = false
     @State private var pairingError: String?
     @State private var deviceStatus: String?
+    @State private var confirmGhostCleanup = false
 
     var body: some View {
         NavigationStack {
@@ -147,6 +148,28 @@ struct ContentView: View {
                 }
                 .disabled(model.loading)
 
+                Button("Clean legacy ghost tracks", role: .destructive) {
+                    confirmGhostCleanup = true
+                }
+                .disabled(model.loading)
+                .confirmationDialog(
+                    "Remove tracks created by the broken test builds?",
+                    isPresented: $confirmGhostCleanup,
+                    titleVisibility: .visible
+                ) {
+                    Button("Clean ghost tracks", role: .destructive) {
+                        Task {
+                            await model.cleanLegacyGhostTracks(
+                                pairingFileURL: pairingURL,
+                                requiresRemotePairing: pairingStore.requiresRPPairingFile
+                            )
+                        }
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("Close Music first. Only legacy Navi Music Sync filenames are targeted. The current 16-hex MP3 imports are preserved, and a rollback database is created before replacement.")
+                }
+
                 Button("Remove pairing file", role: .destructive) {
                     do { try pairingStore.removePairingFile() }
                     catch { pairingError = error.localizedDescription }
@@ -154,7 +177,7 @@ struct ContentView: View {
                 .disabled(model.loading)
             }
 
-            Text("Live injection creates a local database backup and keeps a second rollback database on the device. Close Music before performing a live injection and keep the local-device VPN/tunnel active until the operation completes.")
+            Text("Live injection and ghost cleanup create a local database backup and keep a second rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
