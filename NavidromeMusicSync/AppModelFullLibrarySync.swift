@@ -5,13 +5,53 @@ import SwiftUI
 extension AppModel {
     func syncEntireNavidromeLibrary(pairingFileURL: URL, requiresRemotePairing: Bool) async {
         loading = true
-        activityTitle = "Syncing complete Navidrome library"
+        activityTitle = "Preparing NaviTune sync"
         activityProgress = 0
         activityLog.removeAll(keepingCapacity: true)
         activityLog.append("Comparing live Music database with Navidrome")
+        NavidromeSettingsStore.save(server: server, username: username, password: password)
+
+        if #available(iOS 26.0, *) {
+            do {
+                try BackgroundSyncCoordinator.shared.startUserInitiatedSync { [weak self] text, value in
+                    guard let self else { return }
+                    self.activityTitle = text
+                    self.activityProgress = value
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "HH:mm:ss"
+                    self.activityLog.append("[\(formatter.string(from: Date()))] \(text)")
+                    if self.activityLog.count > 120 {
+                        self.activityLog.removeFirst(self.activityLog.count - 120)
+                    }
+                } completion: { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success(let syncResult):
+                        self.loading = false
+                        self.activityTitle = "Library sync complete"
+                        self.activityProgress = 1
+                        self.activityLog.append(syncResult.summary)
+                        self.message = syncResult.summary + " Music can be reopened after the sync has finished."
+                    case .failure(let error):
+                        self.loading = false
+                        self.activityTitle = "Library sync failed"
+                        self.activityProgress = nil
+                        self.activityLog.append("ERROR: \(error.localizedDescription)")
+                        self.message = error.localizedDescription
+                    }
+                }
+                activityTitle = "Sync running in background"
+                activityLog.append("iOS continued-processing task started. You can lock the screen or switch apps.")
+                return
+            } catch {
+                activityLog.append("Continued processing unavailable; using protected foreground fallback: \(error.localizedDescription)")
+            }
+        }
+
+        let lease = BackgroundExecutionLease(name: "NaviTune Library Sync", keepsScreenAwake: true)
+        defer { lease.end() }
 
         do {
-            NavidromeSettingsStore.save(server: server, username: username, password: password)
             let syncClient = try NavidromeClient(server: server, username: username, password: password)
             let result = try await FullLibrarySyncService().sync(
                 client: syncClient,
@@ -33,7 +73,7 @@ extension AppModel {
             activityTitle = "Library sync complete"
             activityProgress = 1
             activityLog.append(result.summary)
-            message = result.summary + " Close and reopen Music before checking newly imported tracks."
+            message = result.summary + " Music can be reopened after the sync has finished."
         } catch {
             loading = false
             activityTitle = "Library sync failed"
@@ -54,13 +94,11 @@ struct FullLibrarySyncButton: View {
             Button {
                 confirmSync = true
             } label: {
-                Label("Sync all Navidrome", systemImage: "arrow.triangle.2.circlepath.circle.fill")
-                    .font(.caption.weight(.semibold))
+                Label("Sync library", systemImage: "arrow.triangle.2.circlepath.circle.fill")
             }
-            .buttonStyle(.borderedProminent)
             .disabled(model.loading || !model.connected)
             .confirmationDialog(
-                "Synchronize the complete Navidrome library?",
+                "Sync Navidrome with Music?",
                 isPresented: $confirmSync,
                 titleVisibility: .visible
             ) {
@@ -74,7 +112,7 @@ struct FullLibrarySyncButton: View {
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-                Text("Force-close Music first and keep LocalDevVPN active. The live Music database is compared with the full Navidrome catalog. Tracks already present are skipped; only missing tracks are downloaded and added in protected batches.")
+                Text("Music should be closed and the local-device VPN/tunnel must remain active. Tracks already present are skipped; only missing tracks are downloaded and committed in protected batches.")
             }
         }
     }
