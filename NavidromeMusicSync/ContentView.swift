@@ -122,14 +122,14 @@ struct ContentView: View {
                 }
                 .disabled(model.loading)
 
-                Button("Repair existing song artwork") { confirmArtworkRepair = true }
+                Button("Repair existing metadata") { confirmArtworkRepair = true }
                     .disabled(model.loading)
                     .confirmationDialog(
-                        "Repair artwork on existing Navi tracks?",
+                        "Repair metadata on existing Navi tracks?",
                         isPresented: $confirmArtworkRepair,
                         titleVisibility: .visible
                     ) {
-                        Button("Repair artwork") {
+                        Button("Repair metadata") {
                             Task {
                                 await model.repairExistingSongArtwork(
                                     pairingFileURL: pairingURL,
@@ -139,7 +139,7 @@ struct ContentView: View {
                         }
                         Button("Cancel", role: .cancel) { }
                     } message: {
-                        Text("Close Music first. The repair reuses each track's already-working album artwork and only fixes the missing item-level database mapping. Audio and image files are not duplicated. A rollback database is created first.")
+                        Text("Close Music first. This repairs old item-level artwork mappings and looks up each Navi track's real genre in Navidrome. Audio is not re-downloaded or duplicated. A rollback database is created first.")
                     }
 
                 Button("Clean duplicates & ghost tracks", role: .destructive) { confirmCleanup = true }
@@ -169,7 +169,7 @@ struct ContentView: View {
                 .disabled(model.loading)
             }
 
-            Text("Live injection, artwork repair and cleanup create a local database backup and keep a rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
+            Text("Live injection, metadata repair and cleanup create a local database backup and keep a rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -270,7 +270,7 @@ private struct SongRow: View {
                         }
                         Button("Cancel", role: .cancel) { }
                     } message: {
-                        Text("Close Music first. The original Navidrome audio is preserved and album artwork is imported when available. Database backups are created before write-back.")
+                        Text("Close Music first. Original Navidrome audio, album/song artwork, genre and artist artwork are imported when available. Database backups are created before write-back.")
                     }
             }
 
