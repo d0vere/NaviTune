@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var pairingError: String?
     @State private var deviceStatus: String?
     @State private var confirmCleanup = false
+    @State private var confirmArtworkRepair = false
 
     var body: some View {
         NavigationStack {
@@ -121,6 +122,26 @@ struct ContentView: View {
                 }
                 .disabled(model.loading)
 
+                Button("Repair existing song artwork") { confirmArtworkRepair = true }
+                    .disabled(model.loading)
+                    .confirmationDialog(
+                        "Repair artwork on existing Navi tracks?",
+                        isPresented: $confirmArtworkRepair,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Repair artwork") {
+                            Task {
+                                await model.repairExistingSongArtwork(
+                                    pairingFileURL: pairingURL,
+                                    requiresRemotePairing: pairingStore.requiresRPPairingFile
+                                )
+                            }
+                        }
+                        Button("Cancel", role: .cancel) { }
+                    } message: {
+                        Text("Close Music first. The repair reuses each track's already-working album artwork and only fixes the missing item-level database mapping. Audio and image files are not duplicated. A rollback database is created first.")
+                    }
+
                 Button("Clean duplicates & ghost tracks", role: .destructive) { confirmCleanup = true }
                     .disabled(model.loading)
                     .confirmationDialog(
@@ -148,7 +169,7 @@ struct ContentView: View {
                 .disabled(model.loading)
             }
 
-            Text("Live injection and cleanup create a local database backup and keep a rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
+            Text("Live injection, artwork repair and cleanup create a local database backup and keep a rollback database on the device. Close Music first and keep the local-device VPN/tunnel active until the operation completes.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
