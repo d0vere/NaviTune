@@ -94,7 +94,16 @@ final class FullLibrarySyncService {
 
         try persistPreSyncBackup(from: snapshot.databaseURL)
         let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
-        let existing = try NaviLibraryIndex.existingLocations(databaseURL: stage.databaseURL)
+        let databaseLocations = try NaviLibraryIndex.existingLocations(databaseURL: stage.databaseURL)
+
+        try Task.checkCancellation()
+        await report(progress, "Verifying device audio files", 0.05)
+        let physicallyPresent = try DeviceAudioPresenceIndex().existingFilenames(
+            candidates: databaseLocations,
+            pairingFileURL: pairingFileURL,
+            requiresRemotePairing: requiresRemotePairing
+        )
+        let existing = databaseLocations.intersection(physicallyPresent)
 
         try Task.checkCancellation()
         await report(progress, "Scanning complete Navidrome catalog", 0.08)
