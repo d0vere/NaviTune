@@ -1,4 +1,4 @@
-# NavidromeMusicSync
+# NaviTune
 
 Native iOS app for synchronizing music from a Navidrome/OpenSubsonic server to an iPhone, with the long-term goal of injecting downloaded tracks into the system Music library for Honda RoadSync compatibility.
 
