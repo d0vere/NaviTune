@@ -93,10 +93,10 @@ final class MusicArtworkDatabaseWriter {
                 "artwork_variant_type": .int(0)
             ])
 
-            // Artist artwork is a genuinely separate image. The previous attempt
-            // used getCoverArt?id=<raw artistId>, which Navidrome does not use for
-            // artist art. With the corrected ar-<artistId> fetch, write a distinct
-            // local token/path so the artist JPEG cannot overwrite the album JPEG.
+            // iOS 26.4+ experiment: source type 300 is the local artwork source
+            // already validated for albums on this device. Keep the genuine
+            // Navidrome artist image as a distinct local file/token, remove the
+            // previous source-1 artist pointer, and suppress catalog lookup hints.
             if let artistPID,
                let remoteFilename,
                let artistID = InjectionMetadataRegistry.takeArtistID(for: remoteFilename),
@@ -105,12 +105,20 @@ final class MusicArtworkDatabaseWriter {
                     from: rawArtistArtwork,
                     token: InjectionArtwork.stableArtistToken(artistID: artistID)
                ) {
+                if try tableExists(db, "item_artist"),
+                   try tableColumns(db, "item_artist").contains("store_id") {
+                    try exec(db, "UPDATE item_artist SET store_id = 0 WHERE item_artist_pid = \(artistPID)")
+                }
+
+                try exec(db, "DELETE FROM best_artwork_token WHERE entity_pid = \(artistPID) AND entity_type = 2 AND artwork_type = 1")
+                try exec(db, "DELETE FROM artwork_token WHERE entity_pid = \(artistPID) AND entity_type = 2 AND artwork_type = 1 AND artwork_source_type != 300")
+
                 try writeArtworkLink(
                     db,
                     entityPID: artistPID,
                     entityType: 2,
                     artworkType: 1,
-                    sourceType: 1,
+                    sourceType: 300,
                     token: artistArtwork.token,
                     relativePath: artistArtwork.relativePath
                 )
