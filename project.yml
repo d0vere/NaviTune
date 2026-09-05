@@ -25,6 +25,7 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers: com.d0vere.NaviTune.continued-sync
         INFOPLIST_KEY_UIBackgroundModes: processing
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         CODE_SIGNING_ALLOWED: NO
