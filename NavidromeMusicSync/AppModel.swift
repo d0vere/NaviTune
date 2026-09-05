@@ -97,13 +97,11 @@ final class AppModel: ObservableObject {
             log("Original audio ready: \(localFile.lastPathComponent)")
             let metadata = try InjectionSongMetadata(song: song, localURL: localFile)
 
-            var artwork: InjectionArtwork?
+            var artworkData: Data?
             if let coverID = song.coverArt {
                 progress("Fetching album artwork", 0.20)
-                if let raw = try? await client.coverArt(id: coverID) {
-                    artwork = InjectionArtwork.make(from: raw, navidromeCoverID: coverID)
-                    if artwork != nil { log("Artwork prepared") }
-                }
+                artworkData = try? await client.coverArt(id: coverID)
+                if artworkData != nil { log("Artwork downloaded") }
             }
 
             progress("Reading Music database over RP/AFC", 0.32)
@@ -115,12 +113,13 @@ final class AppModel: ObservableObject {
             progress("Creating local Music record", 0.68)
             let result = try LocalMusicDatabaseBuilder().addSingleTrack(metadata, to: stage.databaseURL)
             try MusicRecordPostProcessor().finalize(databaseURL: result.databaseURL, currentItemPID: result.itemPID, remoteFilename: result.remoteFilename)
-            if let artwork {
+            if let artworkData, let artwork = InjectionArtwork.make(from: artworkData, itemPID: result.itemPID) {
                 progress("Attaching album artwork metadata", 0.86)
                 try MusicArtworkDatabaseWriter().attachAlbumArtwork(databaseURL: result.databaseURL, itemPID: result.itemPID, artwork: artwork)
+                log("Artwork token \(artwork.token) -> \(artwork.relativePath)")
             }
             progress("Simulation complete", 1.0)
-            message = "\(result.summary) Original audio preserved; artwork metadata prepared when available."
+            message = "\(result.summary) Original audio preserved; ByeTunes-compatible artwork metadata prepared when available."
             finishActivity()
         } catch {
             failActivity(error)
@@ -141,15 +140,12 @@ final class AppModel: ObservableObject {
             let metadata = try InjectionSongMetadata(song: song, localURL: downloaded)
             log("Original audio: \(metadata.remoteFilename), \(metadata.fileSize) bytes")
 
-            var artwork: InjectionArtwork?
+            var artworkData: Data?
             if let coverID = song.coverArt {
                 progress("Fetching album artwork", 0.15)
-                if let raw = try? await client.coverArt(id: coverID), let prepared = InjectionArtwork.make(from: raw, navidromeCoverID: coverID) {
-                    artwork = prepared
-                    log("Artwork ready: \(prepared.relativePath)")
-                } else {
-                    log("Artwork unavailable; continuing without cover")
-                }
+                artworkData = try? await client.coverArt(id: coverID)
+                if artworkData != nil { log("Artwork downloaded from Navidrome") }
+                else { log("Artwork unavailable; continuing without cover") }
             }
 
             progress("Reading live Music database over RP/AFC", 0.24)
@@ -167,9 +163,10 @@ final class AppModel: ObservableObject {
             progress("Normalizing local flags and exact duplicates", 0.66)
             try MusicRecordPostProcessor().finalize(databaseURL: mutation.databaseURL, currentItemPID: mutation.itemPID, remoteFilename: mutation.remoteFilename)
 
-            if let artwork {
-                progress("Attaching album artwork metadata", 0.72)
+            if let artworkData, let artwork = InjectionArtwork.make(from: artworkData, itemPID: mutation.itemPID) {
+                progress("Attaching ByeTunes-compatible album artwork", 0.72)
                 try MusicArtworkDatabaseWriter().attachAlbumArtwork(databaseURL: mutation.databaseURL, itemPID: mutation.itemPID, artwork: artwork)
+                log("Artwork token \(artwork.token) -> \(artwork.relativePath)")
                 progress("Uploading album artwork", 0.78)
                 try ArtworkDeviceUploader().upload(artwork, pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
             }
@@ -185,7 +182,7 @@ final class AppModel: ObservableObject {
             }
 
             progress("Injection complete", 1.0)
-            message = "\(result.summary) Original audio quality preserved. Album artwork was added when Navidrome provided it. Local backup: \(backupURL.lastPathComponent). Close and reopen Music before checking it."
+            message = "\(result.summary) Original audio quality preserved. Album artwork uses the iOS 26.4+ ByeTunes token/path scheme when Navidrome provides a cover. Local backup: \(backupURL.lastPathComponent). Close and reopen Music before checking it."
             finishActivity()
         } catch {
             failActivity(error)
@@ -194,7 +191,7 @@ final class AppModel: ObservableObject {
     }
 
     func cleanDuplicateAndGhostTracks(pairingFileURL: URL, requiresRemotePairing: Bool) async {
-        beginActivity("Cleaning duplicates and ghost tracks")
+        beginActivity("Cleaning duplicates and obsolete test tracks")
         do {
             progress("Reading live Music database over RP/AFC", 0.14)
             let snapshot = try DeviceBridge().stageSystemMusicDatabase(pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
@@ -206,12 +203,12 @@ final class AppModel: ObservableObject {
 
             progress("Preparing safe working copy", 0.42)
             let stage = try MusicLibraryStager().prepareWorkingCopy(from: snapshot.databaseURL)
-            progress("Grouping Navi imports by Navidrome hash", 0.58)
+            progress("Finding duplicates and forced-MP3 test imports", 0.58)
             let cleanup = try NaviDuplicateCleanupService().clean(databaseURL: stage.databaseURL)
             log("Records to remove: \(cleanup.removedItems)")
 
             guard cleanup.removedItems > 0 else {
-                progress("No duplicates found", 1.0)
+                progress("Nothing to clean", 1.0)
                 message = cleanup.summary
                 finishActivity()
                 return
@@ -221,7 +218,7 @@ final class AppModel: ObservableObject {
             let deviceResult = try LegacyGhostDeviceWriter().commit(modifiedDatabaseURL: cleanup.databaseURL, legacyFilenames: cleanup.removedFiles, pairingFileURL: pairingFileURL, requiresRemotePairing: requiresRemotePairing)
             log("Removed obsolete remote audio files: \(deviceResult.removedRemoteFiles)")
             progress("Cleanup complete", 1.0)
-            message = "\(cleanup.summary) Lossless/original copies were preferred over old MP3 transcodes. Local backup: \(backupURL.lastPathComponent). Close and reopen Music."
+            message = "\(cleanup.summary) Forced-MP3 imports from the broken test generation were removed; re-import any missing tracks to restore them at original quality. Local backup: \(backupURL.lastPathComponent). Close and reopen Music."
             finishActivity()
         } catch {
             failActivity(error)
