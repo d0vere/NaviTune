@@ -36,6 +36,12 @@ final class MusicRecordPostProcessor {
                 }
             }
 
+            if let genre = InjectionMetadataRegistry.takeGenre(for: remoteFilename),
+               try tableExists(db, "genre"), try tableExists(db, "sort_map") {
+                let genreRef = try ensureGenre(db, name: genre, representativeItemPID: currentItemPID)
+                try exec(db, "UPDATE item SET genre_id = \(genreRef.id), genre_order = \(genreRef.order), genre_order_section = \(genreRef.section) WHERE item_pid = \(currentItemPID)")
+            }
+
             if try tableExists(db, "item_store") {
                 let values: [String: Int64] = [
                     "sync_in_my_library": 1,
@@ -79,11 +85,48 @@ final class MusicRecordPostProcessor {
             throw error
         }
 
-        // Music displays item_extra.title but sorts by numeric sort_map/order
-        // references. Rebuild those references after every injection so newly
-        // inserted titles participate in the same alphabetical order as the
-        // pre-existing library.
         try MusicSortRepair().repair(databaseURL: databaseURL)
+    }
+
+    private func ensureGenre(_ db: OpaquePointer, name: String, representativeItemPID: Int64) throws -> (id: Int64, order: Int64, section: Int64) {
+        let escaped = sqlLiteral(name)
+        let existingID = try scalarInt64(db, "SELECT genre_id FROM genre WHERE genre = \(escaped) LIMIT 1")
+        let genreID: Int64
+        if let existingID {
+            genreID = existingID
+        } else {
+            genreID = (try scalarInt64(db, "SELECT COALESCE(MAX(genre_id), 0) + 1 FROM genre")) ?? 1
+            try exec(db, "INSERT INTO genre (genre_id, genre, representative_item_pid) VALUES (\(genreID), \(escaped), \(representativeItemPID))")
+        }
+
+        if let order = try scalarInt64(db, "SELECT name_order FROM sort_map WHERE name = \(escaped) LIMIT 1"),
+           let section = try scalarInt64(db, "SELECT name_section FROM sort_map WHERE name = \(escaped) LIMIT 1") {
+            return (genreID, order, section)
+        }
+
+        let nextOrder = (try scalarInt64(db, "SELECT COALESCE(MAX(name_order), 0) + 1 FROM sort_map")) ?? 1
+        let section = Int64(sectionForName(name))
+        let sortKey = sqlLiteral(name.uppercased())
+        try exec(db, "INSERT INTO sort_map (name, sort_key, name_order, name_section) VALUES (\(escaped), \(sortKey), \(nextOrder), \(section))")
+        return (genreID, nextOrder, section)
+    }
+
+    private func sectionForName(_ name: String) -> Int {
+        guard let first = name.uppercased().unicodeScalars.first else { return 26 }
+        let value = Int(first.value)
+        return (65...90).contains(value) ? value - 65 : 26
+    }
+
+    private func sqlLiteral(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+    }
+
+    private func scalarInt64(_ db: OpaquePointer, _ sql: String) throws -> Int64? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return sqlite3_column_int64(statement, 0)
     }
 
     private func itemPIDs(_ db: OpaquePointer, location: String) throws -> [Int64] {
