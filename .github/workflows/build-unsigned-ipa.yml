@@ -51,14 +51,17 @@ jobs:
           file "$GITHUB_WORKSPACE/Vendor/idevice/libidevice_ffi.a"
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          test -d NaviTune.xcodeproj
+          xcodebuild -project NaviTune.xcodeproj -list
 
       - name: Build device app without signing
         run: |
           set -o pipefail
           xcodebuild \
             -project NaviTune.xcodeproj \
-            -scheme NavidromeMusicSync \
+            -scheme NaviTune \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
