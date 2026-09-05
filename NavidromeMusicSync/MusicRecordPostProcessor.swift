@@ -18,9 +18,10 @@ enum MusicRecordPostProcessorError: LocalizedError {
 /// pass only performs targeted row updates/de-duplication in one transaction.
 final class MusicRecordPostProcessor {
     func finalize(databaseURL: URL, currentItemPID: Int64, remoteFilename: String) throws {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(databaseURL.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let db else {
-            if db != nil { sqlite3_close(db) }
+        var dbPointer: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &dbPointer, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+              let db = dbPointer else {
+            if let dbPointer { sqlite3_close(dbPointer) }
             throw MusicRecordPostProcessorError.openFailed
         }
 
@@ -72,11 +73,9 @@ final class MusicRecordPostProcessor {
 
             try exec(db, "COMMIT")
             sqlite3_close(db)
-            db = nil
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             sqlite3_close(db)
-            db = nil
             throw error
         }
 
