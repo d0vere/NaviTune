@@ -55,29 +55,28 @@ final class MusicArtworkDatabaseWriter {
 
         try exec(db, "BEGIN IMMEDIATE")
         do {
-            // Album-level artwork used by album/grid/detail views.
-            try writeArtworkLink(
+            // iOS 26.4+ local album artwork. This path is already validated on-device.
+            try writeAlbumArtworkLink(
                 db,
-                entityPID: albumPID,
-                entityType: 4,
-                artworkType: 6,
+                albumPID: albumPID,
                 token: artwork.token,
                 relativePath: artwork.relativePath
             )
 
-            // Track-level artwork used by song rows and Now Playing. Music looks
-            // specifically for entity_type=1/artwork_type=5 for an individual
-            // item. This token deliberately points to the same physical JPEG as
-            // the album token, so enabling song artwork costs no extra storage.
-            let itemToken = "\(artwork.token)-item"
-            try writeArtworkLink(
-                db,
-                entityPID: itemPID,
-                entityType: 1,
-                artworkType: 5,
-                token: itemToken,
-                relativePath: artwork.relativePath
-            )
+            // ByeTunes does NOT use entity_type=1/artwork_type=5 when inserting a
+            // playable Music item. Its actual best-artwork mapping for a track is
+            // entity_type=0, artwork_type=1, with the SAME artToken used by the
+            // uploaded local artwork. Pointing directly at the existing album JPEG
+            // avoids a second file while allowing song rows/Now Playing to resolve it.
+            try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
+                "entity_pid": .int(itemPID),
+                "entity_type": .int(0),
+                "artwork_type": .int(1),
+                "available_artwork_token": .text(artwork.token),
+                "fetchable_artwork_token": .text(""),
+                "fetchable_artwork_source_type": .int(0),
+                "artwork_variant_type": .int(0)
+            ])
 
             try exec(db, "COMMIT")
         } catch {
@@ -86,11 +85,9 @@ final class MusicArtworkDatabaseWriter {
         }
     }
 
-    private func writeArtworkLink(
+    private func writeAlbumArtworkLink(
         _ db: OpaquePointer,
-        entityPID: Int64,
-        entityType: Int64,
-        artworkType: Int64,
+        albumPID: Int64,
         token: String,
         relativePath: String
     ) throws {
@@ -98,9 +95,9 @@ final class MusicArtworkDatabaseWriter {
         var tokenValues: [String: SQLValue] = [
             "artwork_token": .text(token),
             "artwork_source_type": .int(300),
-            "artwork_type": .int(artworkType),
-            "entity_pid": .int(entityPID),
-            "entity_type": .int(entityType),
+            "artwork_type": .int(6),
+            "entity_pid": .int(albumPID),
+            "entity_type": .int(4),
             "artwork_variant_type": .int(0)
         ]
         for name in ["primary_text_color", "secondary_text_color", "tertiary_text_color", "quaternary_text_color", "background_color", "gradient_text_color", "gradient_color"] where tokenColumns.contains(name) {
@@ -115,16 +112,16 @@ final class MusicArtworkDatabaseWriter {
             "artwork_token": .text(token),
             "artwork_source_type": .int(300),
             "relative_path": .text(relativePath),
-            "artwork_type": .int(artworkType),
+            "artwork_type": .int(6),
             "artwork_variant_type": .int(0)
         ]
         if artworkColumns.contains("interest_data") { artworkValues["interest_data"] = .text("") }
         try insertDynamic(db, table: "artwork", replace: true, values: artworkValues)
 
         try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
-            "entity_pid": .int(entityPID),
-            "entity_type": .int(entityType),
-            "artwork_type": .int(artworkType),
+            "entity_pid": .int(albumPID),
+            "entity_type": .int(4),
+            "artwork_type": .int(6),
             "available_artwork_token": .text(token),
             "fetchable_artwork_token": .text(""),
             "fetchable_artwork_source_type": .int(0),
