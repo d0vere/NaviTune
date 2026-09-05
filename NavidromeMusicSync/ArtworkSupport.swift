@@ -24,16 +24,6 @@ struct InjectionArtwork {
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         return InjectionArtwork(data: jpeg, token: token, relativePath: "\(hex.prefix(2))/\(hex.dropFirst(2))")
     }
-
-    /// A deterministic token keeps one local artist image per Navidrome artist
-    /// while keeping it physically separate from album/song artwork.
-    static func stableArtistToken(artistID: String) -> String {
-        let digest = SHA256.hash(data: Data("navidrome-artist:\(artistID)".utf8))
-        var value: UInt64 = 0
-        for byte in digest.prefix(8) { value = (value << 8) | UInt64(byte) }
-        value &= 0x7FFF_FFFF_FFFF_FFFF
-        return String(max(value, 1))
-    }
 }
 
 enum MusicArtworkDatabaseError: LocalizedError {
@@ -66,12 +56,9 @@ final class MusicArtworkDatabaseWriter {
             throw MusicArtworkDatabaseError.unsupportedSchema
         }
 
-        let artistPID = try scalarInt64(db, "SELECT item_artist_pid FROM item WHERE item_pid = \(itemPID) LIMIT 1")
-        let remoteFilename = try scalarText(db, "SELECT location FROM item_extra WHERE item_pid = \(itemPID) LIMIT 1")
-
         try exec(db, "BEGIN IMMEDIATE")
         do {
-            // Album artwork: already validated on the user's iOS build.
+            // Album artwork: validated on the user's iOS 26.4+ device.
             try writeArtworkLink(
                 db,
                 entityPID: albumPID,
@@ -82,7 +69,7 @@ final class MusicArtworkDatabaseWriter {
                 relativePath: artwork.relativePath
             )
 
-            // Track rows / Now Playing.
+            // Track rows / Now Playing: validated with new imports.
             try insertDynamic(db, table: "best_artwork_token", replace: true, values: [
                 "entity_pid": .int(itemPID),
                 "entity_type": .int(0),
@@ -93,30 +80,10 @@ final class MusicArtworkDatabaseWriter {
                 "artwork_variant_type": .int(0)
             ])
 
-            // Artist artwork is a genuinely separate image. The previous attempt
-            // used getCoverArt?id=<raw artistId>, which Navidrome does not use for
-            // artist art. With the corrected ar-<artistId> fetch, write a distinct
-            // local token/path so the artist JPEG cannot overwrite the album JPEG.
-            if let artistPID,
-               let remoteFilename,
-               let artistID = InjectionMetadataRegistry.takeArtistID(for: remoteFilename),
-               let rawArtistArtwork = NavidromeArtistArtworkFetcher.fetch(artistID: artistID),
-               let artistArtwork = InjectionArtwork.make(
-                    from: rawArtistArtwork,
-                    token: InjectionArtwork.stableArtistToken(artistID: artistID)
-               ) {
-                try writeArtworkLink(
-                    db,
-                    entityPID: artistPID,
-                    entityType: 2,
-                    artworkType: 1,
-                    sourceType: 1,
-                    token: artistArtwork.token,
-                    relativePath: artistArtwork.relativePath
-                )
-                InjectionMetadataRegistry.setPendingArtistArtwork(artistArtwork, forAlbumToken: artwork.token)
-            }
-
+            // Artist artwork experiments are deliberately excluded from the
+            // stable import path. On this device those mappings proved unsafe
+            // and are not required for native playback, genres, album covers,
+            // track covers, or RoadSync control.
             try exec(db, "COMMIT")
         } catch {
             _ = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
@@ -217,14 +184,6 @@ final class MusicArtworkDatabaseWriter {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
         return sqlite3_column_int64(statement, 0)
-    }
-
-    private func scalarText(_ db: OpaquePointer, _ sql: String) throws -> String? {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw sqlError(db) }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else { return nil }
-        return String(cString: text)
     }
 
     private func exec(_ db: OpaquePointer, _ sql: String) throws {
