@@ -6,7 +6,7 @@ import BackgroundTasks
 final class BackgroundSyncCoordinator {
     static let shared = BackgroundSyncCoordinator()
 
-    private let identifier = "com.d0vere.NavidromeMusicSync.continued-sync"
+    private let identifier = "com.d0vere.NaviTune.continued-sync"
     private var registered = false
     private var progressObserver: ((String, Double) -> Void)?
     private var completionObserver: ((Result<FullLibrarySyncResult, Error>) -> Void)?
